@@ -1,24 +1,24 @@
 """
 Módulo principal del sistema de gestión hotelera NexoPMS.
-Contiene la clase NexoPMS que administra disponibilidad, reservas y persistencia.
+Contiene la clase NexoPMS que administra disponibilidad, reservas y persistencia en MySQL.
 """
 
-import json
-import os
 from huesped import Huesped
 from reserva import Reserva
+from conexion import ConexionDB
 
 
 class NexoPMS:
-    """Sistema de gestión hotelera (Property Management System)."""
+    """Sistema de gestión hotelera (Property Management System) conectado a MySQL."""
 
     COSTO_DESAYUNO_NOCHE = 5000
     COSTO_ESTACIONAMIENTO_NOCHE = 8000
 
-    def __init__(self, archivo_datos="nexopms_data.json"):
-        self.archivo_datos = archivo_datos
+    def __init__(self, db=None):
+        self.db = db if db is not None else ConexionDB()
 
-        # Vectores paralelos
+        # Vectores paralelos (valores por defecto si la tabla aún no ha sido leída)
+        self.ids_habitaciones = [1, 2, 3, 4]
         self.habitaciones = ["101", "102", "103", "104"]
         self.tarifas = [45000, 45000, 60000, 70000]
 
@@ -32,47 +32,56 @@ class NexoPMS:
         self.cargar_datos()
 
     def cargar_datos(self):
-        """Carga la matriz de disponibilidad y reservas desde el archivo JSON si existe."""
-        if os.path.exists(self.archivo_datos):
-            try:
-                with open(self.archivo_datos, 'r', encoding='utf-8') as f:
-                    datos = json.load(f)
-                    matriz_guardada = datos.get("matriz", [])
-                    if matriz_guardada:
-                        # Ajuste retrocompatible si la matriz guardada tenía menos días (ej. 7 días)
-                        for i in range(min(len(self.habitaciones), len(matriz_guardada))):
-                            for d in range(min(self.dias_mes, len(matriz_guardada[i]))):
-                                self.matriz_disponibilidad[i][d] = matriz_guardada[i][d]
+        """
+        Carga los vectores paralelos (habitaciones y tarifas), la matriz de disponibilidad
+        y las reservas activas directamente desde la base de datos MySQL (nexopms_db).
+        """
+        try:
+            # 1. Poblar vectores paralelos desde la tabla 'habitaciones'
+            filas_hab = self.db.obtener_habitaciones_y_tarifas()
+            if filas_hab:
+                self.ids_habitaciones = [f["id_habitacion"] for f in filas_hab]
+                self.habitaciones = [str(f["numero_habitacion"]) for f in filas_hab]
+                self.tarifas = [int(f["tarifa_base_noche"]) for f in filas_hab]
 
-                    # Reconstruir objetos de forma retrocompatible
-                    for r in datos.get("reservas", []):
-                        h = Huesped(
-                            r["huesped"]["rut"],
-                            r["huesped"]["nombre"],
-                            r["huesped"]["telefono"]
-                        )
-                        reserva = Reserva(
-                            h,
-                            r["habitacion_idx"],
-                            r["dia_inicio"],
-                            r["dias_estadia"],
-                            r["total"],
-                            incluye_desayuno=r.get("incluye_desayuno", False),
-                            incluye_estacionamiento=r.get("incluye_estacionamiento", False),
-                            estado=r.get("estado", "Confirmada")
-                        )
-                        self.reservas.append(reserva)
-            except Exception as e:
-                print(f"Error al cargar datos: {e}")
+            # Reiniciar matriz en memoria (filas = habitaciones, columnas = 30 días)
+            self.matriz_disponibilidad = [
+                [0 for _ in range(self.dias_mes)] for _ in range(len(self.habitaciones))
+            ]
 
-    def guardar_datos(self):
-        """Persiste el estado de la matriz y las reservas en formato JSON."""
-        datos = {
-            "matriz": self.matriz_disponibilidad,
-            "reservas": [r.to_dict() for r in self.reservas]
-        }
-        with open(self.archivo_datos, 'w', encoding='utf-8') as f:
-            json.dump(datos, f, indent=4, ensure_ascii=False)
+            # 2. Poblar la matriz 4x30 desde la tabla 'ocupacion_diaria'
+            filas_ocupacion = self.db.obtener_ocupacion_diaria()
+            for reg in filas_ocupacion:
+                if reg["id_habitacion"] in self.ids_habitaciones:
+                    hab_idx = self.ids_habitaciones.index(reg["id_habitacion"])
+                    dia_idx = int(reg["dia_mes"]) - 1
+                    if 0 <= dia_idx < self.dias_mes:
+                        self.matriz_disponibilidad[hab_idx][dia_idx] = 1 if reg["ocupada"] else 0
+
+            # 3. Reconstruir objetos Huesped y Reserva desde las tablas 'reservas' y 'huespedes'
+            self.reservas = []
+            filas_reservas = self.db.obtener_reservas_activas()
+            for r in filas_reservas:
+                if r["id_habitacion"] in self.ids_habitaciones:
+                    hab_idx = self.ids_habitaciones.index(r["id_habitacion"])
+                else:
+                    hab_idx = 0
+
+                huesped = Huesped(r["rut"], r["nombre"], r["telefono"])
+                reserva = Reserva(
+                    huesped=huesped,
+                    habitacion_idx=hab_idx,
+                    dia_inicio=int(r["dia_inicio"]) - 1,
+                    dias_estadia=int(r["dias_estadia"]),
+                    total=int(r["monto_total"]),
+                    incluye_desayuno=bool(r["incluye_desayuno"]),
+                    incluye_estacionamiento=bool(r["incluye_estacionamiento"]),
+                    estado=r["estado"]
+                )
+                self.reservas.append(reserva)
+
+        except Exception as e:
+            print(f"Aviso al sincronizar con MySQL: {e}")
 
     def mostrar_matriz_disponibilidad(self):
         """Muestra en consola la matriz de ocupación del mes en bloques de 15 días."""
@@ -109,25 +118,42 @@ class NexoPMS:
         print("----------------------------------------------\n")
 
     def confirmar_y_guardar_reserva(self, nueva_reserva, hab_idx, dia_inicio, dias_estadia):
-        """Subproceso TO-BE: Doble validación de disponibilidad en la matriz antes de persistir."""
+        """
+        Subproceso TO-BE: Doble validación de disponibilidad en la matriz en memoria
+        y en la tabla 'ocupacion_diaria' de MySQL justo antes de persistir la transacción.
+        """
+        # 1. Validación en matriz en memoria
         for d in range(dia_inicio, dia_inicio + dias_estadia):
             if self.matriz_disponibilidad[hab_idx][d] != 0:
                 print("Error de validación: La habitación ya no se encuentra disponible en las fechas indicadas.")
                 return False
 
-        # Marcar matriz como ocupada
+        id_habitacion = self.ids_habitaciones[hab_idx]
+        dia_inicio_bd = dia_inicio + 1
+
+        # 2. Doble validación contra la base de datos MySQL
+        if not self.db.verificar_disponibilidad_db(id_habitacion, dia_inicio_bd, dias_estadia):
+            print("Error de validación en BD: Las fechas acaban de ser ocupadas en el servidor MySQL.")
+            self.cargar_datos()
+            return False
+
+        # 3. Guardar transaccionalmente en MySQL (huespedes, reservas y ocupacion_diaria)
+        nueva_reserva.estado = "Confirmada"
+        if not self.db.guardar_reserva_transaccional(nueva_reserva, id_habitacion):
+            return False
+
+        # 4. Actualizar matriz en memoria y lista local de reservas
         for d in range(dia_inicio, dia_inicio + dias_estadia):
             self.matriz_disponibilidad[hab_idx][d] = 1
 
-        nueva_reserva.estado = "Confirmada"
         self.reservas.append(nueva_reserva)
-        self.guardar_datos()
-        print("¡Reserva confirmada y guardada exitosamente!")
+        print("¡Reserva confirmada y guardada exitosamente en MySQL!")
         return True
 
     def registrar_reserva(self):
         """Flujo de consola para cotizar y registrar una nueva reserva."""
         print("\n--- NUEVA RESERVA ---")
+        self.cargar_datos()
         self.mostrar_matriz_disponibilidad()
 
         try:
@@ -214,8 +240,9 @@ class NexoPMS:
             print("Error: Ingrese valores numéricos válidos para los días.")
 
     def ver_reservas_activas(self):
-        """Lista todas las reservas registradas en el sistema."""
-        print("\n--- RESERVAS ACTIVAS ---")
+        """Lista todas las reservas registradas en la base de datos MySQL."""
+        self.cargar_datos()
+        print("\n--- RESERVAS ACTIVAS (MySQL) ---")
         if not self.reservas:
             print("No hay reservas registradas.")
             return
@@ -234,12 +261,12 @@ class NexoPMS:
                 f"Habitación: {hab_num} | Ingreso: Día {r.dia_inicio + 1} | Noches: {r.dias_estadia} | "
                 f"Servicios: {texto_servicios} | Total: ${r.total:,}"
             )
-        print("------------------------\n")
+        print("--------------------------------\n")
 
     def iniciar(self):
         """Menú principal interactivo en consola."""
         while True:
-            print("\n=== SISTEMA NEXOPMS ===")
+            print("\n=== SISTEMA NEXOPMS (MySQL) ===")
             print("1. Consultar matriz de disponibilidad")
             print("2. Consultar tarifas")
             print("3. Registrar nueva reserva (Cotizar y Confirmar)")
@@ -249,6 +276,7 @@ class NexoPMS:
             opcion = input("Seleccione una opción: ")
 
             if opcion == '1':
+                self.cargar_datos()
                 self.mostrar_matriz_disponibilidad()
             elif opcion == '2':
                 self.consultar_tarifas()
