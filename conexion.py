@@ -286,6 +286,45 @@ class ConexionDB:
                     """
                 )
 
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS configuracion (
+                        clave VARCHAR(50) PRIMARY KEY,
+                        valor VARCHAR(150) NOT NULL
+                    ) ENGINE = InnoDB
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO configuracion (clave, valor)
+                    VALUES ('nombre_hotel', 'Hotel Los Arrayanes')
+                    """
+                )
+
+                # Migrar columnas mes/anio en reservas y ocupacion_diaria si no existen
+                for tabla_cal in ("reservas", "ocupacion_diaria"):
+                    cursor.execute(
+                        """
+                        SELECT COLUMN_NAME
+                        FROM INFORMATION_SCHEMA.COLUMNS
+                        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
+                        """,
+                        (tabla_cal,),
+                    )
+                    cols_cal = {
+                        _extraer_campo(fila, "COLUMN_NAME", 0)
+                        for fila in cursor.fetchall()
+                    }
+                    if cols_cal:
+                        if "anio" not in cols_cal:
+                            cursor.execute(
+                                f"ALTER TABLE {tabla_cal} ADD COLUMN anio SMALLINT UNSIGNED NOT NULL DEFAULT 2026"
+                            )
+                        if "mes" not in cols_cal:
+                            cursor.execute(
+                                f"ALTER TABLE {tabla_cal} ADD COLUMN mes TINYINT UNSIGNED NOT NULL DEFAULT 11"
+                            )
+
             conn.commit()
             cursor.close()
             self._esquema_asegurado = True
@@ -365,16 +404,74 @@ class ConexionDB:
             if conn and conn.is_connected():
                 conn.close()
 
-    def obtener_ocupacion_diaria(self):
-        """Obtiene todos los registros de días ocupados en la tabla ocupacion_diaria."""
+    def obtener_nombre_hotel(self):
+        """Obtiene el nombre configurable del hotel desde la tabla 'configuracion'."""
         conn = None
         try:
             conn = self.conectar()
             cursor = conn.cursor(dictionary=True)
             cursor.execute(
-                "SELECT id_habitacion, dia_mes, ocupada, id_reserva "
-                "FROM ocupacion_diaria WHERE ocupada = 1"
+                "SELECT valor FROM configuracion WHERE clave = 'nombre_hotel'"
             )
+            fila = cursor.fetchone()
+            cursor.close()
+            if fila and fila.get("valor"):
+                return str(fila["valor"]).strip()
+            return "Hotel Los Arrayanes"
+        except Error:
+            return "Hotel Los Arrayanes"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def actualizar_nombre_hotel(self, nuevo_nombre):
+        """Actualiza el nombre del hotel en la tabla 'configuracion'. Retorna (exito, mensaje)."""
+        if not isinstance(nuevo_nombre, str):
+            return False, "El nombre del hotel debe ser una cadena de texto."
+        nombre_limpio = nuevo_nombre.strip()
+        if not nombre_limpio or len(nombre_limpio) > 150:
+            return False, "El nombre del hotel debe tener entre 1 y 150 caracteres."
+
+        conn = None
+        try:
+            conn = self.conectar()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO configuracion (clave, valor)
+                VALUES ('nombre_hotel', %s)
+                ON DUPLICATE KEY UPDATE valor = VALUES(valor)
+                """,
+                (nombre_limpio,),
+            )
+            conn.commit()
+            cursor.close()
+            return True, f"Nombre del hotel actualizado a '{nombre_limpio}'."
+        except Error as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, f"Error al actualizar nombre del hotel en MySQL: {e}"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def obtener_ocupacion_diaria(self, mes=None, anio=None):
+        """Obtiene los registros de días ocupados en ocupacion_diaria (opcionalmente filtrados por mes/año)."""
+        conn = None
+        try:
+            conn = self.conectar()
+            cursor = conn.cursor(dictionary=True)
+            if mes is not None and anio is not None:
+                cursor.execute(
+                    "SELECT id_habitacion, anio, mes, dia_mes, ocupada, id_reserva "
+                    "FROM ocupacion_diaria WHERE ocupada = 1 AND mes = %s AND anio = %s",
+                    (int(mes), int(anio)),
+                )
+            else:
+                cursor.execute(
+                    "SELECT id_habitacion, anio, mes, dia_mes, ocupada, id_reserva "
+                    "FROM ocupacion_diaria WHERE ocupada = 1"
+                )
             filas = cursor.fetchall()
             cursor.close()
             return filas
@@ -394,6 +491,8 @@ class ConexionDB:
                 SELECT
                     r.id_reserva,
                     r.id_habitacion,
+                    r.anio,
+                    r.mes,
                     r.dia_inicio,
                     r.dias_estadia,
                     r.incluye_desayuno,
@@ -946,15 +1045,17 @@ class ConexionDB:
         dia_inicio_bd,
         dias_estadia,
         excluir_id_reserva=None,
+        mes=None,
+        anio=None,
     ):
         """
         Verifica directamente en 'ocupacion_diaria' que ninguno de los días del rango
-        esté ocupado (excluyendo opcionalmente la reserva en edición).
+        esté ocupado (excluyendo opcionalmente la reserva en edición y filtrando por mes/año).
         """
         id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
-        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=30)
-        dias = _parsear_entero(dias_estadia, minimo=1, maximo=30)
-        if id_hab is None or dia_ini is None or dias is None or (dia_ini + dias - 1) > 30:
+        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=31)
+        dias = _parsear_entero(dias_estadia, minimo=1, maximo=31)
+        if id_hab is None or dia_ini is None or dias is None or (dia_ini + dias - 1) > 31:
             return False
 
         excluir_id = None
@@ -963,6 +1064,16 @@ class ConexionDB:
             if excluir_id is None:
                 return False
 
+        filtro_periodo = ""
+        params_periodo = []
+        if mes is not None and anio is not None:
+            mes_val = _parsear_entero(mes, minimo=1, maximo=12)
+            anio_val = _parsear_entero(anio, minimo=2000, maximo=2100)
+            if mes_val is None or anio_val is None:
+                return False
+            filtro_periodo = " AND mes = %s AND anio = %s"
+            params_periodo = [mes_val, anio_val]
+
         conn = None
         try:
             conn = self.conectar()
@@ -970,24 +1081,24 @@ class ConexionDB:
             dia_fin_bd = dia_ini + dias - 1
             if excluir_id is None:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM ocupacion_diaria
                     WHERE id_habitacion = %s
                       AND dia_mes BETWEEN %s AND %s
-                      AND ocupada = 1
+                      AND ocupada = 1{filtro_periodo}
                     """,
-                    (id_hab, dia_ini, dia_fin_bd),
+                    tuple([id_hab, dia_ini, dia_fin_bd] + params_periodo),
                 )
             else:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT COUNT(*) FROM ocupacion_diaria
                     WHERE id_habitacion = %s
                       AND dia_mes BETWEEN %s AND %s
                       AND ocupada = 1
-                      AND (id_reserva IS NULL OR id_reserva != %s)
+                      AND (id_reserva IS NULL OR id_reserva != %s){filtro_periodo}
                     """,
-                    (id_hab, dia_ini, dia_fin_bd, excluir_id),
+                    tuple([id_hab, dia_ini, dia_fin_bd, excluir_id] + params_periodo),
                 )
             ocupadas = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
             cursor.close()
@@ -996,7 +1107,7 @@ class ConexionDB:
             if conn and conn.is_connected():
                 conn.close()
 
-    def guardar_reserva_transaccional(self, nueva_reserva, id_habitacion):
+    def guardar_reserva_transaccional(self, nueva_reserva, id_habitacion, mes=None, anio=None):
         """
         Guarda de forma atómica (transacción SQL):
         1. Verifica conflicto en 'ocupacion_diaria' con bloqueo FOR UPDATE.
@@ -1011,15 +1122,18 @@ class ConexionDB:
         if huesped is None or not all(hasattr(huesped, attr) for attr in ("rut", "nombre", "telefono")):
             return False
         id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
-        dia_inicio_py = _parsear_entero(getattr(nueva_reserva, "dia_inicio", None), minimo=0, maximo=29)
-        dias = _parsear_entero(getattr(nueva_reserva, "dias_estadia", None), minimo=1, maximo=30)
+        dia_inicio_py = _parsear_entero(getattr(nueva_reserva, "dia_inicio", None), minimo=0, maximo=30)
+        dias = _parsear_entero(getattr(nueva_reserva, "dias_estadia", None), minimo=1, maximo=31)
         total_val = _parsear_entero(getattr(nueva_reserva, "total", None), minimo=0, maximo=MAX_INT_UNSIGNED)
         if id_hab is None or dia_inicio_py is None or dias is None or total_val is None:
             return False
 
+        mes_val = _parsear_entero(mes if mes is not None else getattr(nueva_reserva, "mes", None), minimo=1, maximo=12) or 11
+        anio_val = _parsear_entero(anio if anio is not None else getattr(nueva_reserva, "anio", None), minimo=2000, maximo=2100) or 2026
+
         dia_inicio_bd = dia_inicio_py + 1
         dia_fin_bd = dia_inicio_bd + dias - 1
-        if dia_fin_bd > 30:
+        if dia_fin_bd > 31:
             return False
 
         conn = None
@@ -1032,11 +1146,13 @@ class ConexionDB:
                 """
                 SELECT COUNT(*) FROM ocupacion_diaria
                 WHERE id_habitacion = %s
+                  AND anio = %s
+                  AND mes = %s
                   AND dia_mes BETWEEN %s AND %s
                   AND ocupada = 1
                 FOR UPDATE
                 """,
-                (id_hab, dia_inicio_bd, dia_fin_bd),
+                (id_hab, anio_val, mes_val, dia_inicio_bd, dia_fin_bd),
             )
             ocupadas = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
             if ocupadas > 0:
@@ -1081,8 +1197,10 @@ class ConexionDB:
                     estado,
                     habitacion_nombre,
                     tipo_alojamiento,
-                    tarifa_base_snapshot
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    tarifa_base_snapshot,
+                    anio,
+                    mes
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     id_huesped,
@@ -1096,6 +1214,8 @@ class ConexionDB:
                     getattr(nueva_reserva, "habitacion_nombre", None),
                     getattr(nueva_reserva, "tipo_alojamiento", None),
                     getattr(nueva_reserva, "tarifa_base_snapshot", None),
+                    anio_val,
+                    mes_val,
                 ),
             )
             id_reserva = cursor.lastrowid
@@ -1124,18 +1244,20 @@ class ConexionDB:
                 dia_mes = dia_inicio_bd + d_offset
                 cursor.execute(
                     """
-                    INSERT INTO ocupacion_diaria (id_habitacion, dia_mes, ocupada, id_reserva)
-                    VALUES (%s, %s, 1, %s)
+                    INSERT INTO ocupacion_diaria (id_habitacion, anio, mes, dia_mes, ocupada, id_reserva)
+                    VALUES (%s, %s, %s, %s, 1, %s)
                     ON DUPLICATE KEY UPDATE
                         ocupada = 1,
                         id_reserva = VALUES(id_reserva)
                     """,
-                    (id_hab, dia_mes, id_reserva),
+                    (id_hab, anio_val, mes_val, dia_mes, id_reserva),
                 )
 
             conn.commit()
             cursor.close()
             nueva_reserva.id_reserva = id_reserva
+            nueva_reserva.mes = mes_val
+            nueva_reserva.anio = anio_val
             if not servicios_actuales and servicios_resueltos:
                 nueva_reserva.servicios = [dict(s) for s in servicios_resueltos]
             return True
@@ -1159,6 +1281,8 @@ class ConexionDB:
         habitacion_nombre=None,
         tipo_alojamiento=None,
         tarifa_base_snapshot=None,
+        mes=None,
+        anio=None,
     ):
         """
         Actualiza atómicamente una reserva en estado 'Confirmada', revalidando
@@ -1166,15 +1290,15 @@ class ConexionDB:
         """
         id_res = _parsear_entero(id_reserva, minimo=1, maximo=MAX_INT_UNSIGNED)
         id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
-        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=30)
-        dias = _parsear_entero(dias_estadia, minimo=1, maximo=30)
+        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=31)
+        dias = _parsear_entero(dias_estadia, minimo=1, maximo=31)
         total_val = _parsear_entero(monto_total, minimo=0, maximo=MAX_INT_UNSIGNED)
 
         if id_res is None or id_hab is None or dia_ini is None or dias is None or total_val is None:
             return False, "Parámetros inválidos para editar la reserva."
         dia_fin = dia_ini + dias - 1
-        if dia_fin > 30:
-            return False, "El rango de días excede el límite del mes (1..30)."
+        if dia_fin > 31:
+            return False, "El rango de días excede el límite del mes (1..31)."
 
         conn = None
         try:
@@ -1183,7 +1307,7 @@ class ConexionDB:
             cursor = conn.cursor(dictionary=True)
 
             cursor.execute(
-                "SELECT id_reserva, estado FROM reservas WHERE id_reserva = %s FOR UPDATE",
+                "SELECT id_reserva, estado, anio, mes FROM reservas WHERE id_reserva = %s FOR UPDATE",
                 (id_res,),
             )
             fila_res = cursor.fetchone()
@@ -1195,6 +1319,9 @@ class ConexionDB:
                 conn.rollback()
                 cursor.close()
                 return False, "Solo se pueden editar reservas en estado 'Confirmada'."
+
+            anio_val = _parsear_entero(anio, minimo=2000, maximo=2100) or _parsear_entero(_extraer_campo(fila_res, "anio", 2), minimo=2000, maximo=2100) or 2026
+            mes_val = _parsear_entero(mes, minimo=1, maximo=12) or _parsear_entero(_extraer_campo(fila_res, "mes", 3), minimo=1, maximo=12) or 11
 
             cursor.execute(
                 """
@@ -1232,12 +1359,14 @@ class ConexionDB:
                 SELECT COUNT(*) AS ocupadas
                 FROM ocupacion_diaria
                 WHERE id_habitacion = %s
+                  AND anio = %s
+                  AND mes = %s
                   AND dia_mes BETWEEN %s AND %s
                   AND ocupada = 1
                   AND (id_reserva IS NULL OR id_reserva != %s)
                 FOR UPDATE
                 """,
-                (id_hab, dia_ini, dia_fin, id_res),
+                (id_hab, anio_val, mes_val, dia_ini, dia_fin, id_res),
             )
             ocupadas = _extraer_campo(cursor.fetchone(), "ocupadas", 0) or 0
             if ocupadas > 0:
@@ -1265,6 +1394,8 @@ class ConexionDB:
                 """
                 UPDATE reservas
                 SET id_habitacion = %s,
+                    anio = %s,
+                    mes = %s,
                     dia_inicio = %s,
                     dias_estadia = %s,
                     incluye_desayuno = %s,
@@ -1277,6 +1408,8 @@ class ConexionDB:
                 """,
                 (
                     id_hab,
+                    anio_val,
+                    mes_val,
                     dia_ini,
                     dias,
                     incluye_des,
@@ -1317,13 +1450,13 @@ class ConexionDB:
                 dia_mes = dia_ini + d_offset
                 cursor.execute(
                     """
-                    INSERT INTO ocupacion_diaria (id_habitacion, dia_mes, ocupada, id_reserva)
-                    VALUES (%s, %s, 1, %s)
+                    INSERT INTO ocupacion_diaria (id_habitacion, anio, mes, dia_mes, ocupada, id_reserva)
+                    VALUES (%s, %s, %s, %s, 1, %s)
                     ON DUPLICATE KEY UPDATE
                         ocupada = 1,
                         id_reserva = VALUES(id_reserva)
                     """,
-                    (id_hab, dia_mes, id_res),
+                    (id_hab, anio_val, mes_val, dia_mes, id_res),
                 )
 
             conn.commit()

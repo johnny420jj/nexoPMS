@@ -71,7 +71,9 @@ class Reserva:
         tipo_alojamiento=None,
         tarifa_base_snapshot=None,
         id_reserva=None,
-        servicios=None
+        servicios=None,
+        mes=None,
+        anio=None
     ):
         self.huesped = huesped
         self.habitacion_idx = habitacion_idx
@@ -79,6 +81,8 @@ class Reserva:
         self.dias_estadia = dias_estadia
         self.total = total
         self.id_reserva = _parsear_id_opcional(id_reserva)
+        self.mes = _parsear_id_opcional(mes)
+        self.anio = _parsear_id_opcional(anio)
         self.servicios = _normalizar_servicios(servicios, dias_estadia)
         if servicios is None:
             self.incluye_desayuno = bool(incluye_desayuno)
@@ -107,5 +111,7 @@ class Reserva:
             "estado": self.estado,
             "habitacion_nombre": self.habitacion_nombre,
             "tipo_alojamiento": self.tipo_alojamiento,
-            "tarifa_base_snapshot": self.tarifa_base_snapshot
+            "tarifa_base_snapshot": self.tarifa_base_snapshot,
+            "mes": self.mes,
+            "anio": self.anio
         }

@@ -24,6 +24,7 @@ class FakeConexionDB:
     """Simulador de ConexionDB en memoria para pruebas aisladas sin alterar la BD real."""
 
     def __init__(self):
+        self.nombre_hotel = "Hotel Los Arrayanes"
         self.usuarios = []
         self.habitaciones = [
             {"id_habitacion": 1, "tipo": "Habitación", "numero_habitacion": "101", "tarifa_base_noche": 45000, "activa": 1},
@@ -96,8 +97,26 @@ class FakeConexionDB:
             if h.get("activa", 1) == 1
         ]
 
-    def obtener_ocupacion_diaria(self):
-        return [dict(o) for o in self.ocupacion if o.get("ocupada") == 1]
+    def obtener_nombre_hotel(self):
+        return self.nombre_hotel
+
+    def actualizar_nombre_hotel(self, nuevo_nombre):
+        if not isinstance(nuevo_nombre, str) or not nuevo_nombre.strip() or len(nuevo_nombre.strip()) > 150:
+            return False, "Nombre de hotel inválido."
+        self.nombre_hotel = nuevo_nombre.strip()
+        return True, f"Nombre del hotel actualizado a '{self.nombre_hotel}'."
+
+    def obtener_ocupacion_diaria(self, mes=None, anio=None):
+        resultado = []
+        for o in self.ocupacion:
+            if o.get("ocupada") != 1:
+                continue
+            if mes is not None and o.get("mes", 11) != int(mes):
+                continue
+            if anio is not None and o.get("anio", 2026) != int(anio):
+                continue
+            resultado.append(dict(o))
+        return resultado
 
     def _obtener_servicios_de_reserva(self, id_reserva):
         return [
@@ -292,11 +311,11 @@ class FakeConexionDB:
                 return True, nuevo_estado, f"Servicio '{s['nombre']}' {estado_txt} exitosamente."
         return False, None, "El servicio seleccionado no existe."
 
-    def verificar_disponibilidad_db(self, id_habitacion, dia_inicio_bd, dias_estadia, excluir_id_reserva=None):
+    def verificar_disponibilidad_db(self, id_habitacion, dia_inicio_bd, dias_estadia, excluir_id_reserva=None, mes=None, anio=None):
         id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
-        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=30)
-        dias = _parsear_entero(dias_estadia, minimo=1, maximo=30)
-        if id_hab is None or dia_ini is None or dias is None or (dia_ini + dias - 1) > 30:
+        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=31)
+        dias = _parsear_entero(dias_estadia, minimo=1, maximo=31)
+        if id_hab is None or dia_ini is None or dias is None or (dia_ini + dias - 1) > 31:
             return False
 
         excluir_id = None
@@ -307,6 +326,10 @@ class FakeConexionDB:
 
         dia_fin_bd = dia_ini + dias - 1
         for reg in self.ocupacion:
+            if mes is not None and reg.get("mes", 11) != int(mes):
+                continue
+            if anio is not None and reg.get("anio", 2026) != int(anio):
+                continue
             if (
                 reg["id_habitacion"] == id_hab
                 and dia_ini <= reg["dia_mes"] <= dia_fin_bd
@@ -398,39 +421,49 @@ class FakeConexionDB:
                     })
         return resueltos
 
-    def _upsert_ocupacion_fake(self, id_habitacion, dia_mes, id_reserva):
+    def _upsert_ocupacion_fake(self, id_habitacion, dia_mes, id_reserva, mes=11, anio=2026):
         for reg in self.ocupacion:
-            if reg["id_habitacion"] == id_habitacion and reg["dia_mes"] == dia_mes:
+            if (
+                reg["id_habitacion"] == id_habitacion
+                and reg.get("mes", 11) == mes
+                and reg.get("anio", 2026) == anio
+                and reg["dia_mes"] == dia_mes
+            ):
                 reg["ocupada"] = 1
                 reg["id_reserva"] = id_reserva
                 return
         self.ocupacion.append({
             "id_habitacion": id_habitacion,
+            "anio": anio,
+            "mes": mes,
             "dia_mes": dia_mes,
             "ocupada": 1,
             "id_reserva": id_reserva,
         })
 
-    def guardar_reserva_transaccional(self, nueva_reserva, id_habitacion):
+    def guardar_reserva_transaccional(self, nueva_reserva, id_habitacion, mes=None, anio=None):
         if nueva_reserva is None:
             return False
         huesped = getattr(nueva_reserva, "huesped", None)
         if huesped is None or not all(hasattr(huesped, attr) for attr in ("rut", "nombre", "telefono")):
             return False
         id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
-        dia_inicio_py = _parsear_entero(getattr(nueva_reserva, "dia_inicio", None), minimo=0, maximo=29)
-        dias = _parsear_entero(getattr(nueva_reserva, "dias_estadia", None), minimo=1, maximo=30)
+        dia_inicio_py = _parsear_entero(getattr(nueva_reserva, "dia_inicio", None), minimo=0, maximo=30)
+        dias = _parsear_entero(getattr(nueva_reserva, "dias_estadia", None), minimo=1, maximo=31)
         total_val = _parsear_entero(getattr(nueva_reserva, "total", None), minimo=0, maximo=MAX_INT_UNSIGNED)
         if id_hab is None or dia_inicio_py is None or dias is None or total_val is None:
             return False
 
+        mes_val = _parsear_entero(mes if mes is not None else getattr(nueva_reserva, "mes", None), minimo=1, maximo=12) or 11
+        anio_val = _parsear_entero(anio if anio is not None else getattr(nueva_reserva, "anio", None), minimo=2000, maximo=2100) or 2026
+
         dia_inicio_bd = dia_inicio_py + 1
         dia_fin_bd = dia_inicio_bd + dias - 1
-        if dia_fin_bd > 30:
+        if dia_fin_bd > 31:
             return False
         if not any(h["id_habitacion"] == id_hab for h in self.habitaciones):
             return False
-        if not self.verificar_disponibilidad_db(id_hab, dia_inicio_bd, dias):
+        if not self.verificar_disponibilidad_db(id_hab, dia_inicio_bd, dias, mes=mes_val, anio=anio_val):
             return False
 
         servicios_actuales = list(getattr(nueva_reserva, "servicios", []) or [])
@@ -449,6 +482,8 @@ class FakeConexionDB:
         self.reservas.append({
             "id_reserva": id_reserva,
             "id_habitacion": id_hab,
+            "anio": anio_val,
+            "mes": mes_val,
             "dia_inicio": dia_inicio_bd,
             "dias_estadia": dias,
             "incluye_desayuno": 1 if nueva_reserva.incluye_desayuno else 0,
@@ -471,7 +506,7 @@ class FakeConexionDB:
                 "subtotal": srv["subtotal"],
             })
         for d_offset in range(dias):
-            self._upsert_ocupacion_fake(id_hab, dia_inicio_bd + d_offset, id_reserva)
+            self._upsert_ocupacion_fake(id_hab, dia_inicio_bd + d_offset, id_reserva, mes=mes_val, anio=anio_val)
         nueva_reserva.id_reserva = id_reserva
         if not servicios_actuales and servicios_resueltos:
             nueva_reserva.servicios = [dict(s) for s in servicios_resueltos]
@@ -1434,6 +1469,8 @@ class TestNexoPMSSmoke(unittest.TestCase):
             mock_cursor.fetchall.side_effect = [
                 [],
                 [{"COLUMN_NAME": "id_reserva", "COLUMN_TYPE": "int unsigned"}],
+                [],
+                [],
             ]
             self.assertTrue(db.asegurar_esquema())
             sql_mig = " ".join(
@@ -1976,6 +2013,41 @@ class TestNexoPMSSmoke(unittest.TestCase):
         self.assertIn("INFORME 2: INFORME DE INGRESOS", out)
         self.assertIn("INFORME 3: INFORME DE OCUPACIÓN", out)
         self.assertIn("INFORME 4: RENDIMIENTO DE SERVICIOS ADICIONALES", out)
+
+    def test_32_meses_calendario_y_editar_nombre_hotel(self):
+        """Valida cambio de meses (Enero 31 días, Febrero 28 días) y edición de nombre del hotel."""
+        from nexopms import NexoPMS
+
+        sistema = NexoPMS(db=self.fake_db)
+        sistema.usuario_actual = {"id_usuario": 1, "username": "admin", "rol": "admin"}
+
+        # 1. Editar nombre del hotel
+        self.assertEqual(sistema.nombre_hotel, "Hotel Los Arrayanes")
+        ok, msg = sistema.actualizar_nombre_hotel("Cabañas del Sur")
+        self.assertTrue(ok)
+        self.assertEqual(sistema.nombre_hotel, "Cabañas del Sur")
+        self.assertEqual(self.fake_db.obtener_nombre_hotel(), "Cabañas del Sur")
+
+        # 2. Cambiar a Enero 2026 (31 días) y Febrero 2026 (28 días)
+        ok_ene, _ = sistema.cambiar_mes(1, 2026)
+        self.assertTrue(ok_ene)
+        self.assertEqual(sistema.nombre_mes_actual, "Enero")
+        self.assertEqual(sistema.dias_mes, 31)
+        self.assertEqual(len(sistema.matriz_disponibilidad[0]), 31)
+
+        ok_feb, _ = sistema.cambiar_mes(2, 2026)
+        self.assertTrue(ok_feb)
+        self.assertEqual(sistema.nombre_mes_actual, "Febrero")
+        self.assertEqual(sistema.dias_mes, 28)
+        self.assertEqual(len(sistema.matriz_disponibilidad[0]), 28)
+
+        # 3. Verificar render en consola incluye nombre del hotel y mes
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            sistema.mostrar_matriz_disponibilidad()
+        out = buf.getvalue()
+        self.assertIn("Febrero 2026", out)
+        self.assertIn("Cabañas del Sur", out)
 
 
 if __name__ == "__main__":

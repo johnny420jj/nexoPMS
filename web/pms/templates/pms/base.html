@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{% block title %}NexoPMS — Hotel Los Arrayanes{% endblock %}</title>
+  <title>{% block title %}NexoPMS — {{ nombre_hotel|default:"Hotel Los Arrayanes" }}{% endblock %}</title>
   <style>
     :root {
       --bg: #0f172a;
@@ -140,7 +140,7 @@
 <body>
   {% if usuario %}
   <nav class="navbar">
-    <div class="brand">Nexo<span>PMS</span> · Hotel Los Arrayanes</div>
+    <div class="brand">Nexo<span>PMS</span> · {{ nombre_hotel|default:"Hotel Los Arrayanes" }}</div>
     <div class="nav-links">
       <a href="{% url 'dashboard' %}">Inicio</a>
       {% if usuario.rol == 'admin' %}

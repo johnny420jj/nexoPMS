@@ -3,6 +3,7 @@ Módulo principal del sistema de gestión hotelera NexoPMS.
 Contiene la clase NexoPMS que administra disponibilidad, reservas y persistencia en MySQL.
 """
 
+import calendar
 from huesped import Huesped
 from reserva import Reserva
 from conexion import ConexionDB
@@ -15,9 +16,16 @@ class NexoPMS:
     COSTO_ESTACIONAMIENTO_NOCHE = 8000
     MAX_INTENTOS_LOGIN = 3
     TIPOS_ALOJAMIENTO = ("Habitación", "Cabaña")
+    MESES_ANIO = (
+        "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+        "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+    )
 
-    def __init__(self, db=None):
+    def __init__(self, db=None, mes=11, anio=2026):
         self.db = db if db is not None else ConexionDB()
+        self.nombre_hotel = "Hotel Los Arrayanes"
+        self.mes_actual = mes if 1 <= int(mes) <= 12 else 11
+        self.anio_actual = anio if 2000 <= int(anio) <= 2100 else 2026
 
         # Vectores paralelos de alojamientos (valores por defecto si la tabla aún no ha sido leída)
         self.ids_habitaciones = [1, 2, 3, 4]
@@ -31,8 +39,8 @@ class NexoPMS:
         self.servicios_costos = [self.COSTO_DESAYUNO_NOCHE, self.COSTO_ESTACIONAMIENTO_NOCHE]
         self.servicios_disponibles = [True, True]
 
-        # Matriz de disponibilidad: 4 habitaciones x 30 días (0: Libre, 1: Ocupada)
-        self.dias_mes = 30
+        # Matriz de disponibilidad: habitaciones x días del mes activo (0: Libre, 1: Ocupada)
+        self.dias_mes = calendar.monthrange(self.anio_actual, self.mes_actual)[1]
         self.matriz_disponibilidad = [
             [0 for _ in range(self.dias_mes)] for _ in range(len(self.habitaciones))
         ]
@@ -41,6 +49,41 @@ class NexoPMS:
         self.usuario_actual = None
         self._esquema_inicializado = False
         self.cargar_datos()
+
+    @property
+    def nombre_mes_actual(self):
+        """Retorna el nombre en español del mes activo (Enero..Diciembre)."""
+        return self.MESES_ANIO[self.mes_actual - 1]
+
+    def cambiar_mes(self, mes, anio=None):
+        """Cambia el mes/año activo del calendario y recarga la matriz de disponibilidad."""
+        try:
+            mes_val = int(mes)
+            anio_val = int(anio) if anio is not None else self.anio_actual
+        except (TypeError, ValueError):
+            return False, "Mes o año inválido."
+        if not (1 <= mes_val <= 12) or not (2000 <= anio_val <= 2100):
+            return False, "Mes debe estar entre 1 y 12 y el año entre 2000 y 2100."
+        self.mes_actual = mes_val
+        self.anio_actual = anio_val
+        self.dias_mes = calendar.monthrange(self.anio_actual, self.mes_actual)[1]
+        self.cargar_datos()
+        return True, f"Calendario cambiado a {self.nombre_mes_actual} {self.anio_actual} ({self.dias_mes} días)."
+
+    def actualizar_nombre_hotel(self, nuevo_nombre):
+        """Actualiza el nombre configurable del hotel en BD y en memoria."""
+        if self.usuario_actual is not None and not self._es_admin():
+            return False, "Acceso denegado: función exclusiva para administradores."
+        if not hasattr(self.db, "actualizar_nombre_hotel"):
+            nombre_limpio = str(nuevo_nombre).strip() if nuevo_nombre else ""
+            if not nombre_limpio:
+                return False, "El nombre del hotel no puede estar vacío."
+            self.nombre_hotel = nombre_limpio
+            return True, f"Nombre del hotel actualizado a '{nombre_limpio}'."
+        exito, msg = self.db.actualizar_nombre_hotel(nuevo_nombre)
+        if exito:
+            self.nombre_hotel = str(nuevo_nombre).strip()
+        return exito, msg
 
     def _leer_entrada(self, prompt):
         """Lee entrada de consola protegiendo EOFError, KeyboardInterrupt y ValueError."""
@@ -164,6 +207,11 @@ class NexoPMS:
                 self.db.asegurar_esquema()
                 self._esquema_inicializado = True
 
+            if hasattr(self.db, "obtener_nombre_hotel"):
+                nombre_db = self.db.obtener_nombre_hotel()
+                if nombre_db:
+                    self.nombre_hotel = nombre_db
+
             # 1. Poblar vectores paralelos desde la tabla 'habitaciones'
             filas_hab = self.db.obtener_habitaciones_y_tarifas()
             if filas_hab is not None:
@@ -181,9 +229,22 @@ class NexoPMS:
             ]
             self.reservas = []
 
-            # 2. Poblar la matriz desde la tabla 'ocupacion_diaria'
-            filas_ocupacion = self.db.obtener_ocupacion_diaria()
+            # 2. Poblar la matriz desde la tabla 'ocupacion_diaria' filtrada por mes y año activos
+            try:
+                filas_ocupacion = self.db.obtener_ocupacion_diaria(
+                    mes=self.mes_actual,
+                    anio=self.anio_actual,
+                )
+            except TypeError:
+                filas_ocupacion = self.db.obtener_ocupacion_diaria()
+
             for reg in filas_ocupacion:
+                reg_mes = reg.get("mes")
+                reg_anio = reg.get("anio")
+                if reg_mes is not None and int(reg_mes) != self.mes_actual:
+                    continue
+                if reg_anio is not None and int(reg_anio) != self.anio_actual:
+                    continue
                 if reg["id_habitacion"] in self.ids_habitaciones:
                     hab_idx = self.ids_habitaciones.index(reg["id_habitacion"])
                     dia_idx = int(reg["dia_mes"]) - 1
@@ -216,6 +277,8 @@ class NexoPMS:
                     tarifa_base_snapshot=r.get("tarifa_base_snapshot"),
                     id_reserva=r.get("id_reserva"),
                     servicios=r.get("servicios") or None,
+                    mes=r.get("mes", self.mes_actual),
+                    anio=r.get("anio", self.anio_actual),
                 )
                 self.reservas.append(reserva)
 
@@ -264,8 +327,11 @@ class NexoPMS:
         return False
 
     def mostrar_matriz_disponibilidad(self):
-        """Muestra en consola la matriz de ocupación del mes en bloques de 15 días."""
-        print(f"\n--- MATRIZ DE DISPONIBILIDAD ({self.dias_mes} Días) ---")
+        """Muestra en consola la matriz de ocupación del mes activo en bloques de 15 días."""
+        print(
+            f"\n--- MATRIZ DE DISPONIBILIDAD ({self.dias_mes} Días) — "
+            f"{self.nombre_mes_actual} {self.anio_actual} | {self.nombre_hotel} ---"
+        )
         if not self.habitaciones:
             print("No hay habitaciones ni cabañas registradas.\n")
             return
@@ -337,9 +403,18 @@ class NexoPMS:
 
         id_habitacion = self.ids_habitaciones[hab_idx]
         dia_inicio_bd = dia_inicio + 1
+        mes_res = nueva_reserva.mes if getattr(nueva_reserva, "mes", None) is not None else self.mes_actual
+        anio_res = nueva_reserva.anio if getattr(nueva_reserva, "anio", None) is not None else self.anio_actual
 
         # 2. Doble validación contra la base de datos MySQL
-        if not self.db.verificar_disponibilidad_db(id_habitacion, dia_inicio_bd, dias_estadia):
+        try:
+            disponible_db = self.db.verificar_disponibilidad_db(
+                id_habitacion, dia_inicio_bd, dias_estadia, mes=mes_res, anio=anio_res
+            )
+        except TypeError:
+            disponible_db = self.db.verificar_disponibilidad_db(id_habitacion, dia_inicio_bd, dias_estadia)
+
+        if not disponible_db:
             print("Error de validación en BD: Las fechas acaban de ser ocupadas en el servidor MySQL.")
             self.cargar_datos()
             return False
@@ -355,10 +430,18 @@ class NexoPMS:
             )
         if nueva_reserva.tarifa_base_snapshot is None:
             nueva_reserva.tarifa_base_snapshot = self.tarifas[hab_idx]
+        nueva_reserva.mes = mes_res
+        nueva_reserva.anio = anio_res
 
         # 3. Guardar transaccionalmente en MySQL (huespedes, reservas y ocupacion_diaria)
         nueva_reserva.estado = "Confirmada"
-        if not self.db.guardar_reserva_transaccional(nueva_reserva, id_habitacion):
+        try:
+            guardado = self.db.guardar_reserva_transaccional(
+                nueva_reserva, id_habitacion, mes=mes_res, anio=anio_res
+            )
+        except TypeError:
+            guardado = self.db.guardar_reserva_transaccional(nueva_reserva, id_habitacion)
+        if not guardado:
             return False
 
         # 4. Actualizar matriz en memoria y lista local de reservas
@@ -1765,17 +1848,49 @@ class NexoPMS:
             else:
                 print("Opción inválida. Intente nuevamente.")
 
+    def editar_nombre_hotel_cli(self):
+        """Flujo interactivo para editar el nombre del hotel (solo admin)."""
+        if not self._es_admin():
+            print("Acceso denegado: función exclusiva para administradores.")
+            return
+        print(f"\n--- EDITAR NOMBRE DEL HOTEL (Actual: {self.nombre_hotel}) ---")
+        nuevo_nombre = self._leer_texto("Nuevo nombre del hotel: ", max_len=150)
+        if nuevo_nombre is None:
+            return
+        exito, msg = self.actualizar_nombre_hotel(nuevo_nombre)
+        print(msg if exito else f"Error: {msg}")
+
+    def seleccionar_mes_cli(self):
+        """Permite al usuario elegir cualquier mes del año (1-12) y año para ver la matriz."""
+        print("\n--- SELECCIONAR MES DEL CALENDARIO ---")
+        for num, nombre in enumerate(self.MESES_ANIO, start=1):
+            marca = " (Actual)" if num == self.mes_actual else ""
+            print(f"{num:2d}. {nombre}{marca}")
+        mes = self._leer_entero("Seleccione el mes (1-12): ", minimo=1, maximo=12)
+        if mes is None:
+            return
+        anio = self._leer_entero(
+            f"Ingrese el año [{self.anio_actual}] (Enter para mantener): ",
+            minimo=2000,
+            maximo=2100,
+            default=self.anio_actual,
+        )
+        if anio is None:
+            return
+        exito, msg = self.cambiar_mes(mes, anio)
+        print(msg if exito else f"Error: {msg}")
+
     def menu_administracion(self):
         """
         Submenú exclusivo para administradores: Módulo Administración
-        (Habitaciones/Cabañas y Servicios Adicionales + Costos).
+        (Habitaciones/Cabañas, Servicios Adicionales + Costos y Nombre del Hotel).
         """
         if not self._es_admin():
             print("Acceso denegado: función exclusiva para administradores.")
             return None
 
         while True:
-            print("\n--- MÓDULO ADMINISTRACIÓN ---")
+            print(f"\n--- MÓDULO ADMINISTRACIÓN ({self.nombre_hotel}) ---")
             print("1. Listar habitaciones y cabañas")
             print("2. Agregar habitación o cabaña")
             print("3. Editar habitación o cabaña")
@@ -1783,6 +1898,7 @@ class NexoPMS:
             print("5. Gestionar Servicios Adicionales + Costos")
             print("6. Cerrar sesión / Cambiar de usuario")
             print("7. Volver al menú principal")
+            print("8. Editar nombre del hotel")
 
             raw = self._leer_entrada("Seleccione una opción: ")
             if raw is None:
@@ -1806,6 +1922,8 @@ class NexoPMS:
                 return "CAMBIAR_USUARIO"
             elif opcion == "7":
                 return None
+            elif opcion == "8":
+                self.editar_nombre_hotel_cli()
             else:
                 print("Opción inválida. Intente nuevamente.")
 
@@ -1939,7 +2057,10 @@ class NexoPMS:
             rol = self.usuario_actual.get("rol", "recepcionista")
             username = self.usuario_actual.get("username", "")
 
-            print(f"\n=== SISTEMA NEXOPMS (MySQL) === [Usuario: {username} | Rol: {rol}]")
+            print(
+                f"\n=== SISTEMA NEXOPMS (MySQL) === "
+                f"[{self.nombre_hotel} | Usuario: {username} | Rol: {rol} | {self.nombre_mes_actual} {self.anio_actual}]"
+            )
 
             if rol == "admin":
                 print("1. Módulo Administración")

@@ -18,9 +18,31 @@ def _obtener_db():
     return ConexionDB()
 
 
+def _obtener_mes_anio(request):
+    """Lee mes (1..12) y año (2000..2100) desde query string o sesión (por defecto Noviembre 2026)."""
+    raw_mes = request.GET.get("mes") or request.POST.get("mes") or request.session.get("mes_actual", 11)
+    raw_anio = request.GET.get("anio") or request.POST.get("anio") or request.session.get("anio_actual", 2026)
+    try:
+        mes = int(raw_mes)
+        if not (1 <= mes <= 12):
+            mes = 11
+    except (TypeError, ValueError):
+        mes = 11
+    try:
+        anio = int(raw_anio)
+        if not (2000 <= anio <= 2100):
+            anio = 2026
+    except (TypeError, ValueError):
+        anio = 2026
+    request.session["mes_actual"] = mes
+    request.session["anio_actual"] = anio
+    return mes, anio
+
+
 def _obtener_sistema(request):
-    """Inicializa NexoPMS sincronizado con MySQL y con el usuario de la sesión activa."""
-    sistema = NexoPMS(db=_obtener_db())
+    """Inicializa NexoPMS sincronizado con MySQL para el mes/año y usuario activos."""
+    mes, anio = _obtener_mes_anio(request)
+    sistema = NexoPMS(db=_obtener_db(), mes=mes, anio=anio)
     usuario = request.session.get("usuario")
     if usuario:
         sistema.usuario_actual = usuario
@@ -61,17 +83,24 @@ def login_view(request):
     if request.session.get("usuario"):
         return redirect("dashboard")
 
+    nombre_hotel = "Hotel Los Arrayanes"
+    db = _obtener_db()
+    try:
+        if hasattr(db, "asegurar_esquema"):
+            db.asegurar_esquema()
+        if hasattr(db, "obtener_nombre_hotel"):
+            nombre_hotel = db.obtener_nombre_hotel()
+    except Exception:
+        pass
+
     if request.method == "POST":
         username = request.POST.get("username", "").strip()
         password = request.POST.get("password", "")
-        db = _obtener_db()
         try:
-            if hasattr(db, "asegurar_esquema"):
-                db.asegurar_esquema()
             usuario = db.autenticar_usuario(username, password)
         except Exception as e:
             messages.error(request, f"No se pudo conectar a MySQL (¿está encendido XAMPP?): {e}")
-            return render(request, "pms/login.html")
+            return render(request, "pms/login.html", {"nombre_hotel": nombre_hotel})
 
         if usuario:
             request.session["usuario"] = usuario
@@ -79,7 +108,7 @@ def login_view(request):
             return redirect("dashboard")
         messages.error(request, "Credenciales inválidas. Verifica usuario y contraseña.")
 
-    return render(request, "pms/login.html")
+    return render(request, "pms/login.html", {"nombre_hotel": nombre_hotel})
 
 
 def logout_view(request):
@@ -124,8 +153,20 @@ def dashboard_view(request):
         if disp
     ]
 
+    meses_lista = [
+        {"numero": idx, "nombre": nombre}
+        for idx, nombre in enumerate(NexoPMS.MESES_ANIO, start=1)
+    ]
+
     contexto = {
         "usuario": usuario,
+        "nombre_hotel": sistema.nombre_hotel,
+        "mes_actual": sistema.mes_actual,
+        "anio_actual": sistema.anio_actual,
+        "nombre_mes_actual": sistema.nombre_mes_actual,
+        "dias_mes": sistema.dias_mes,
+        "meses_lista": meses_lista,
+        "anios_lista": [2025, 2026, 2027, 2028],
         "dias_header": list(range(1, sistema.dias_mes + 1)),
         "alojamientos_matriz": alojamientos_matriz,
         "servicios_activos": servicios_activos,
@@ -182,12 +223,17 @@ def reservas_view(request):
                 else "Habitación"
             )
         )
+        mes_res = r.mes if getattr(r, "mes", None) else sistema.mes_actual
+        anio_res = r.anio if getattr(r, "anio", None) else sistema.anio_actual
         reservas_render.append({
             "id_reserva": r.id_reserva,
             "huesped": r.huesped,
             "habitacion_idx": r.habitacion_idx,
             "habitacion_nombre": hab_nombre,
             "tipo_alojamiento": tipo_aloj,
+            "mes": mes_res,
+            "mes_nombre": NexoPMS.MESES_ANIO[mes_res - 1],
+            "anio": anio_res,
             "dia_inicio_ui": r.dia_inicio + 1,
             "dias_estadia": r.dias_estadia,
             "servicios_texto": sistema._formatear_servicios_reserva(r),
@@ -196,8 +242,18 @@ def reservas_view(request):
             "estado": r.estado,
         })
 
+    meses_lista = [
+        {"numero": idx, "nombre": nombre}
+        for idx, nombre in enumerate(NexoPMS.MESES_ANIO, start=1)
+    ]
+
     contexto = {
         "usuario": usuario,
+        "nombre_hotel": sistema.nombre_hotel,
+        "mes_actual": sistema.mes_actual,
+        "anio_actual": sistema.anio_actual,
+        "nombre_mes_actual": sistema.nombre_mes_actual,
+        "meses_lista": meses_lista,
         "puede_registrar": usuario["rol"] in ("admin", "recepcionista"),
         "alojamientos": alojamientos,
         "servicios_disponibles": servicios_disponibles,
@@ -349,6 +405,9 @@ def reportes_view(request):
 
     return render(request, "pms/reportes.html", {
         "usuario": usuario,
+        "nombre_hotel": sistema.nombre_hotel,
+        "nombre_mes_actual": sistema.nombre_mes_actual,
+        "anio_actual": sistema.anio_actual,
         "resumen": reportes["resumen_reservas"],
         "ingresos": reportes["ingresos"],
         "ocupacion": reportes["ocupacion"],
@@ -358,7 +417,7 @@ def reportes_view(request):
 
 @requiere_roles("admin")
 def administracion_view(request):
-    """Módulo Administración (exclusivo Admin): CRUD de Habitaciones/Cabañas y Servicios."""
+    """Módulo Administración (exclusivo Admin): Hotel, Habitaciones/Cabañas y Servicios."""
     usuario = request.session["usuario"]
     sistema = _obtener_sistema(request)
 
@@ -389,9 +448,27 @@ def administracion_view(request):
 
     return render(request, "pms/administracion.html", {
         "usuario": usuario,
+        "nombre_hotel": sistema.nombre_hotel,
+        "dias_mes": sistema.dias_mes,
+        "nombre_mes_actual": sistema.nombre_mes_actual,
+        "anio_actual": sistema.anio_actual,
         "alojamientos": alojamientos,
         "servicios": servicios,
     })
+
+
+@requiere_roles("admin")
+def editar_hotel_view(request):
+    """Actualiza el nombre del hotel en MySQL (exclusivo Admin)."""
+    if request.method == "POST":
+        sistema = _obtener_sistema(request)
+        nuevo_nombre = request.POST.get("nombre_hotel", "").strip()
+        exito, msg = sistema.actualizar_nombre_hotel(nuevo_nombre)
+        if exito:
+            messages.success(request, msg)
+        else:
+            messages.error(request, msg)
+    return redirect("administracion")
 
 
 @requiere_roles("admin")

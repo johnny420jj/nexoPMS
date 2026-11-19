@@ -38,8 +38,33 @@
 </div>
 
 <div class="card">
-  <h3>Matriz de Disponibilidad Mensual (30 Días)</h3>
-  <p class="muted">Verde (<code>L</code>) = Libre · Rojo (<code>X</code>) = Ocupada</p>
+  <div style="display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:0.75rem; margin-bottom:0.75rem;">
+    <div>
+      <h3 style="margin:0;">Matriz de Disponibilidad — {{ nombre_mes_actual }} {{ anio_actual }} ({{ dias_mes }} Días)</h3>
+      <p class="muted" style="margin:0.2rem 0 0;">Verde (<code>L</code>) = Libre · Rojo (<code>X</code>) = Ocupada</p>
+    </div>
+    <form method="get" action="{% url 'dashboard' %}" style="display:flex; align-items:center; gap:0.5rem;">
+      <input type="hidden" name="mes" value="{{ mes_actual }}" />
+      <label for="anio-sel" style="margin:0;">Año:</label>
+      <select id="anio-sel" name="anio" onchange="this.form.submit()" style="width:auto;">
+        {% for y in anios_lista %}
+        <option value="{{ y }}" {% if y == anio_actual %}selected{% endif %}>{{ y }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  <div style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-bottom:1rem;">
+    {% for m in meses_lista %}
+    <a
+      href="{% url 'dashboard' %}?mes={{ m.numero }}&anio={{ anio_actual }}"
+      class="btn btn-sm {% if m.numero != mes_actual %}btn-secondary{% endif %}"
+    >
+      {{ m.nombre }}
+    </a>
+    {% endfor %}
+  </div>
+
   <div class="table-wrap">
     <table>
       <thead>

@@ -2,6 +2,16 @@ CREATE DATABASE IF NOT EXISTS nexopms_db CHARACTER SET utf8mb4 COLLATE utf8mb4_g
 
 USE nexopms_db;
 
+CREATE TABLE IF NOT EXISTS configuracion (
+    clave VARCHAR(50) PRIMARY KEY,
+    valor VARCHAR(150) NOT NULL
+) ENGINE = InnoDB;
+
+-- Configuración inicial del nombre del hotel
+INSERT IGNORE INTO
+    configuracion (clave, valor)
+VALUES ('nombre_hotel', 'Hotel Los Arrayanes');
+
 CREATE TABLE IF NOT EXISTS usuarios (
     id_usuario INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) NOT NULL UNIQUE,
@@ -79,6 +89,8 @@ CREATE TABLE IF NOT EXISTS reservas (
     id_reserva INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     id_huesped INT UNSIGNED NOT NULL,
     id_habitacion INT UNSIGNED NOT NULL,
+    anio SMALLINT UNSIGNED NOT NULL DEFAULT 2026,
+    mes TINYINT UNSIGNED NOT NULL DEFAULT 11,
     dia_inicio TINYINT UNSIGNED NOT NULL,
     dias_estadia TINYINT UNSIGNED NOT NULL,
     incluye_desayuno TINYINT(1) NOT NULL DEFAULT 0,
@@ -96,22 +108,25 @@ CREATE TABLE IF NOT EXISTS reservas (
     CONSTRAINT fk_reserva_huesped FOREIGN KEY (id_huesped) REFERENCES huespedes (id_huesped) ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT fk_reserva_habitacion FOREIGN KEY (id_habitacion) REFERENCES habitaciones (id_habitacion) ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT chk_dias_validos CHECK (
-        dia_inicio BETWEEN 1 AND 30
+        mes BETWEEN 1 AND 12
+        AND dia_inicio BETWEEN 1 AND 31
         AND dias_estadia >= 1
-        AND (dia_inicio + dias_estadia - 1) <= 30
+        AND (dia_inicio + dias_estadia - 1) <= 31
     )
 ) ENGINE = InnoDB;
 
 CREATE TABLE IF NOT EXISTS ocupacion_diaria (
     id_ocupacion INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     id_habitacion INT UNSIGNED NOT NULL,
+    anio SMALLINT UNSIGNED NOT NULL DEFAULT 2026,
+    mes TINYINT UNSIGNED NOT NULL DEFAULT 11,
     dia_mes TINYINT UNSIGNED NOT NULL,
     ocupada TINYINT(1) NOT NULL DEFAULT 1,
     id_reserva INT UNSIGNED NULL,
-    CONSTRAINT uq_habitacion_dia UNIQUE (id_habitacion, dia_mes),
+    CONSTRAINT uq_habitacion_dia UNIQUE (id_habitacion, anio, mes, dia_mes),
     CONSTRAINT fk_ocupacion_habitacion FOREIGN KEY (id_habitacion) REFERENCES habitaciones (id_habitacion) ON UPDATE CASCADE ON DELETE CASCADE,
     CONSTRAINT fk_ocupacion_reserva FOREIGN KEY (id_reserva) REFERENCES reservas (id_reserva) ON UPDATE CASCADE ON DELETE SET NULL,
-    CONSTRAINT chk_dia_mes CHECK (dia_mes BETWEEN 1 AND 30)
+    CONSTRAINT chk_dia_mes CHECK (mes BETWEEN 1 AND 12 AND dia_mes BETWEEN 1 AND 31)
 ) ENGINE = InnoDB;
 
 CREATE TABLE IF NOT EXISTS reserva_servicios (

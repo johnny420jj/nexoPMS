@@ -7,7 +7,7 @@
   <h2>Registrar Nueva Reserva</h2>
   <form method="post" action="{% url 'registrar_reserva' %}" id="form-reserva">
     {% csrf_token %}
-    <div class="grid grid-3">
+    <div class="grid grid-4">
       <div class="form-row">
         <label for="habitacion_idx">Habitación / Cabaña</label>
         <select id="habitacion_idx" name="habitacion_idx" required>
@@ -19,14 +19,23 @@
         </select>
       </div>
       <div class="form-row">
+        <label for="mes">Mes</label>
+        <select id="mes" name="mes" required>
+          {% for m in meses_lista %}
+          <option value="{{ m.numero }}" {% if m.numero == mes_actual %}selected{% endif %}>{{ m.nombre }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
         <label for="dia_inicio">Día de ingreso (1-{{ dias_mes }})</label>
-        <input id="dia_inicio" name="dia_inicio" type="number" min="1" max="{{ dias_mes }}" value="1" required />
+        <input id="dia_inicio" name="dia_inicio" type="number" min="1" max="31" value="1" required />
       </div>
       <div class="form-row">
         <label for="dias_estadia">Cantidad de noches</label>
-        <input id="dias_estadia" name="dias_estadia" type="number" min="1" max="{{ dias_mes }}" value="1" required />
+        <input id="dias_estadia" name="dias_estadia" type="number" min="1" max="31" value="1" required />
       </div>
     </div>
+    <input type="hidden" name="anio" value="{{ anio_actual }}" />
 
     <div class="grid grid-3">
       <div class="form-row">
@@ -95,7 +104,7 @@
           <td>#{{ r.id_reserva }}</td>
           <td><strong>{{ r.huesped.nombre }}</strong><br /><span class="muted">{{ r.huesped.rut }} · {{ r.huesped.telefono }}</span></td>
           <td>{{ r.tipo_alojamiento }} {{ r.habitacion_nombre }}</td>
-          <td>Día {{ r.dia_inicio_ui }} ({{ r.dias_estadia }} noches)</td>
+          <td>{{ r.mes_nombre }} {{ r.anio }} · Día {{ r.dia_inicio_ui }} ({{ r.dias_estadia }} noches)</td>
           <td>{{ r.servicios_texto }}</td>
           <td><strong>${{ r.total }}</strong></td>
           <td>

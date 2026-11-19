@@ -2,6 +2,18 @@
 {% block title %}Administración — NexoPMS{% endblock %}
 
 {% block content %}
+<div class="card">
+  <h2>Configuración del Hotel</h2>
+  <form method="post" action="{% url 'editar_hotel' %}" style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:flex-end;">
+    {% csrf_token %}
+    <div style="flex:1; min-width:260px;">
+      <label for="nombre_hotel">Nombre del Hotel / Complejo</label>
+      <input id="nombre_hotel" type="text" name="nombre_hotel" value="{{ nombre_hotel }}" maxlength="150" required />
+    </div>
+    <button type="submit" class="btn">Guardar Nombre</button>
+  </form>
+</div>
+
 <div class="grid grid-2">
   <div class="card">
     <h2>Agregar Habitación o Cabaña</h2>

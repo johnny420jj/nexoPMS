@@ -5,7 +5,7 @@
 <div style="max-width: 420px; margin: 4rem auto;">
   <div class="card">
     <h2 style="text-align:center; margin-bottom:0.25rem;">Nexo<span style="color:var(--accent);">PMS</span></h2>
-    <p class="muted" style="text-align:center; margin-top:0;">Hotel Los Arrayanes · Acceso Web</p>
+    <p class="muted" style="text-align:center; margin-top:0;">{{ nombre_hotel|default:"Hotel Los Arrayanes" }} · Acceso Web</p>
 
     <form method="post" action="{% url 'login' %}">
       {% csrf_token %}
