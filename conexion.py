@@ -10,11 +10,46 @@ import mysql.connector
 from mysql.connector import Error
 
 PBKDF2_ITERATIONS = 100_000
+MAX_INT_UNSIGNED = 4294967295
 TIPOS_ALOJAMIENTO_VALIDOS = ("Habitación", "Cabaña")
 USUARIOS_SEMILLA = (
     ("admin", "admin123", "admin"),
+    ("gerente", "gerente123", "gerente"),
     ("recepcion", "recep123", "recepcionista"),
 )
+SERVICIOS_SEMILLA = (
+    ("Desayuno", 5000, True),
+    ("Estacionamiento", 8000, True),
+)
+
+
+def _parsear_entero(valor, minimo=1, maximo=MAX_INT_UNSIGNED):
+    """Convierte y valida un entero en [minimo, maximo], rechazando booleanos y flotantes."""
+    if isinstance(valor, (bool, float)):
+        return None
+    try:
+        numero = int(valor)
+    except (TypeError, ValueError):
+        return None
+    if numero < minimo or numero > maximo:
+        return None
+    return numero
+
+
+def _extraer_campo(fila, clave, indice=0):
+    """Extrae un valor desde una fila tipo dict o tupla/lista."""
+    if fila is None:
+        return None
+    if isinstance(fila, dict):
+        if clave in fila:
+            return fila[clave]
+        for k, v in fila.items():
+            if str(k).lower() == str(clave).lower():
+                return v
+        return next(iter(fila.values()), None)
+    if isinstance(fila, (tuple, list)):
+        return fila[indice] if len(fila) > indice else None
+    return None
 
 
 def hashear_password(password, iterations=PBKDF2_ITERATIONS):
@@ -91,8 +126,8 @@ class ConexionDB:
 
     def asegurar_esquema(self):
         """
-        Crea la tabla 'usuarios' e inserta los usuarios semilla si no existen,
-        y migra idempotentemente columnas nuevas en 'habitaciones' y 'reservas'.
+        Crea e idempotentemente migra las tablas base ('usuarios', 'habitaciones',
+        'reservas', 'servicios', 'reserva_servicios') e inserta datos semilla.
         """
         conn = None
         try:
@@ -105,12 +140,34 @@ class ConexionDB:
                     id_usuario INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                     username VARCHAR(50) NOT NULL UNIQUE,
                     password VARCHAR(255) NOT NULL,
-                    rol ENUM('admin', 'recepcionista') NOT NULL,
+                    rol ENUM('admin', 'gerente', 'recepcionista') NOT NULL,
                     activo TINYINT(1) NOT NULL DEFAULT 1,
                     fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE = InnoDB
                 """
             )
+
+            cursor.execute(
+                """
+                SELECT COLUMN_TYPE
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'usuarios'
+                  AND COLUMN_NAME = 'rol'
+                """
+            )
+            row_rol = cursor.fetchone()
+            if row_rol:
+                raw_col_type = _extraer_campo(row_rol, "COLUMN_TYPE", 0) or ""
+                if isinstance(raw_col_type, (bytes, bytearray)):
+                    raw_col_type = raw_col_type.decode("utf-8", errors="ignore")
+                if "'gerente'" not in str(raw_col_type).lower():
+                    cursor.execute(
+                        """
+                        ALTER TABLE usuarios
+                        MODIFY COLUMN rol ENUM('admin', 'gerente', 'recepcionista') NOT NULL
+                        """
+                    )
 
             for username, raw_password, rol in USUARIOS_SEMILLA:
                 cursor.execute(
@@ -152,13 +209,15 @@ class ConexionDB:
 
             cursor.execute(
                 """
-                SELECT COLUMN_NAME
+                SELECT COLUMN_NAME, COLUMN_TYPE
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = 'reservas'
                 """
             )
-            cols_res = {row["COLUMN_NAME"].lower() for row in cursor.fetchall()}
+            cols_res = {
+                row["COLUMN_NAME"].lower(): row for row in cursor.fetchall()
+            }
             if cols_res:
                 if "habitacion_nombre" not in cols_res:
                     cursor.execute(
@@ -172,6 +231,60 @@ class ConexionDB:
                     cursor.execute(
                         "ALTER TABLE reservas ADD COLUMN tarifa_base_snapshot INT UNSIGNED NULL"
                     )
+                estado_col = cols_res.get("estado")
+                if estado_col:
+                    raw_estado_type = estado_col.get("COLUMN_TYPE") or estado_col.get("column_type")
+                    if isinstance(raw_estado_type, (bytes, bytearray)):
+                        raw_estado_type = raw_estado_type.decode("utf-8", errors="ignore")
+                    if raw_estado_type and "'cancelada'" not in str(raw_estado_type).lower():
+                        cursor.execute(
+                            """
+                            ALTER TABLE reservas
+                            MODIFY COLUMN estado ENUM('Confirmada', 'Cancelada', 'Finalizada')
+                            NOT NULL DEFAULT 'Confirmada'
+                            """
+                        )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS servicios (
+                    id_servicio INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                    nombre VARCHAR(100) NOT NULL UNIQUE,
+                    costo INT UNSIGNED NOT NULL,
+                    disponible TINYINT(1) NOT NULL DEFAULT 1
+                ) ENGINE = InnoDB
+                """
+            )
+
+            for nombre, costo, disponible in SERVICIOS_SEMILLA:
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO servicios (nombre, costo, disponible)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (nombre, int(costo), 1 if disponible else 0),
+                )
+
+            if cols_res:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS reserva_servicios (
+                        id_reserva_servicio INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+                        id_reserva INT UNSIGNED NOT NULL,
+                        id_servicio INT UNSIGNED NOT NULL,
+                        nombre_snapshot VARCHAR(100) NOT NULL,
+                        costo_unitario_snapshot INT UNSIGNED NOT NULL,
+                        subtotal INT UNSIGNED NOT NULL,
+                        CONSTRAINT uq_reserva_servicio UNIQUE (id_reserva, id_servicio),
+                        CONSTRAINT fk_res_serv_reserva FOREIGN KEY (id_reserva)
+                            REFERENCES reservas (id_reserva)
+                            ON UPDATE CASCADE ON DELETE CASCADE,
+                        CONSTRAINT fk_res_serv_servicio FOREIGN KEY (id_servicio)
+                            REFERENCES servicios (id_servicio)
+                            ON UPDATE CASCADE ON DELETE RESTRICT
+                    ) ENGINE = InnoDB
+                    """
+                )
 
             conn.commit()
             cursor.close()
@@ -269,14 +382,15 @@ class ConexionDB:
             if conn and conn.is_connected():
                 conn.close()
 
-    def obtener_reservas_activas(self):
-        """Obtiene todas las reservas confirmadas junto con los datos del huésped."""
+    def _obtener_reservas(self, solo_activas=True):
+        """Obtiene reservas junto con datos del huésped y sus servicios contratados."""
         conn = None
         try:
             conn = self.conectar()
             cursor = conn.cursor(dictionary=True)
+            filtro_estado = "WHERE r.estado = 'Confirmada'" if solo_activas else ""
             cursor.execute(
-                """
+                f"""
                 SELECT
                     r.id_reserva,
                     r.id_habitacion,
@@ -294,16 +408,54 @@ class ConexionDB:
                     h.telefono
                 FROM reservas r
                 INNER JOIN huespedes h ON r.id_huesped = h.id_huesped
-                WHERE r.estado = 'Confirmada'
+                {filtro_estado}
                 ORDER BY r.id_reserva ASC
                 """
             )
-            filas = cursor.fetchall()
+            filas = [dict(f) for f in cursor.fetchall()]
+            if filas:
+                ids = [f["id_reserva"] for f in filas]
+                placeholders = ", ".join(["%s"] * len(ids))
+                cursor.execute(
+                    f"""
+                    SELECT
+                        id_reserva,
+                        id_servicio,
+                        nombre_snapshot,
+                        costo_unitario_snapshot,
+                        subtotal
+                    FROM reserva_servicios
+                    WHERE id_reserva IN ({placeholders})
+                    ORDER BY id_reserva_servicio ASC
+                    """,
+                    tuple(ids),
+                )
+                servicios_por_reserva = {}
+                for srv in cursor.fetchall():
+                    id_res = srv["id_reserva"]
+                    servicios_por_reserva.setdefault(id_res, []).append({
+                        "id_servicio": int(srv["id_servicio"]),
+                        "nombre": str(srv["nombre_snapshot"]),
+                        "costo_unitario": int(srv["costo_unitario_snapshot"]),
+                        "subtotal": int(srv["subtotal"]),
+                    })
+                for fila in filas:
+                    fila["servicios"] = [
+                        dict(s) for s in servicios_por_reserva.get(fila["id_reserva"], [])
+                    ]
             cursor.close()
             return filas
         finally:
             if conn and conn.is_connected():
                 conn.close()
+
+    def obtener_reservas_activas(self):
+        """Obtiene todas las reservas confirmadas junto con huésped y servicios."""
+        return self._obtener_reservas(solo_activas=True)
+
+    def obtener_todas_las_reservas(self):
+        """Obtiene el historial completo de reservas (confirmadas, canceladas, etc.)."""
+        return self._obtener_reservas(solo_activas=False)
 
     def agregar_habitacion(self, tipo, numero_habitacion, tarifa_base_noche):
         """
@@ -313,16 +465,17 @@ class ConexionDB:
         if tipo not in TIPOS_ALOJAMIENTO_VALIDOS:
             return False, None, "Tipo de alojamiento inválido. Use 'Habitación' o 'Cabaña'."
 
-        identificador = (numero_habitacion or "").strip()
+        identificador = (
+            numero_habitacion.strip()
+            if isinstance(numero_habitacion, str)
+            else (str(numero_habitacion).strip() if numero_habitacion is not None else "")
+        )
         if not identificador or len(identificador) > 50:
             return False, None, "El identificador debe tener entre 1 y 50 caracteres."
 
-        try:
-            tarifa = int(tarifa_base_noche)
-        except (TypeError, ValueError):
-            return False, None, "La tarifa base debe ser un número entero positivo."
-        if tarifa <= 0:
-            return False, None, "La tarifa base debe ser mayor a 0."
+        tarifa = _parsear_entero(tarifa_base_noche, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if tarifa is None:
+            return False, None, "La tarifa base debe ser un número entero entre 1 y 4294967295."
 
         conn = None
         try:
@@ -372,19 +525,24 @@ class ConexionDB:
         Actualiza tipo, identificador y tarifa base de un alojamiento sin alterar reservas previas.
         Retorna (exito, mensaje).
         """
+        id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if id_hab is None:
+            return False, "Identificador de alojamiento inválido."
+
         if tipo not in TIPOS_ALOJAMIENTO_VALIDOS:
             return False, "Tipo de alojamiento inválido. Use 'Habitación' o 'Cabaña'."
 
-        identificador = (numero_habitacion or "").strip()
+        identificador = (
+            numero_habitacion.strip()
+            if isinstance(numero_habitacion, str)
+            else (str(numero_habitacion).strip() if numero_habitacion is not None else "")
+        )
         if not identificador or len(identificador) > 50:
             return False, "El identificador debe tener entre 1 y 50 caracteres."
 
-        try:
-            tarifa = int(tarifa_base_noche)
-        except (TypeError, ValueError):
-            return False, "La tarifa base debe ser un número entero positivo."
-        if tarifa <= 0:
-            return False, "La tarifa base debe ser mayor a 0."
+        tarifa = _parsear_entero(tarifa_base_noche, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if tarifa is None:
+            return False, "La tarifa base debe ser un número entero entre 1 y 4294967295."
 
         conn = None
         try:
@@ -392,7 +550,7 @@ class ConexionDB:
             cursor = conn.cursor(dictionary=True)
             cursor.execute(
                 "SELECT id_habitacion FROM habitaciones WHERE id_habitacion = %s AND activa = 1",
-                (id_habitacion,)
+                (id_hab,)
             )
             if cursor.fetchone() is None:
                 cursor.close()
@@ -404,7 +562,7 @@ class ConexionDB:
                 FROM habitaciones
                 WHERE LOWER(numero_habitacion) = LOWER(%s) AND id_habitacion != %s
                 """,
-                (identificador, id_habitacion)
+                (identificador, id_hab)
             )
             if cursor.fetchone() is not None:
                 cursor.close()
@@ -416,7 +574,7 @@ class ConexionDB:
                 SET tipo = %s, numero_habitacion = %s, tarifa_base_noche = %s
                 WHERE id_habitacion = %s
                 """,
-                (tipo, identificador, tarifa, id_habitacion)
+                (tipo, identificador, tarifa, id_hab)
             )
             conn.commit()
             cursor.close()
@@ -434,6 +592,10 @@ class ConexionDB:
         Elimina un alojamiento solo si no posee reservas activas ni días ocupados.
         Retorna (exito, mensaje).
         """
+        id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if id_hab is None:
+            return False, "Identificador de alojamiento inválido."
+
         conn = None
         try:
             conn = self.conectar()
@@ -444,9 +606,9 @@ class ConexionDB:
                 SELECT COUNT(*) FROM ocupacion_diaria
                 WHERE id_habitacion = %s AND ocupada = 1
                 """,
-                (id_habitacion,)
+                (id_hab,)
             )
-            (dias_ocupados,) = cursor.fetchone()
+            dias_ocupados = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
             if dias_ocupados > 0:
                 cursor.close()
                 return False, "No se puede eliminar: el alojamiento tiene días ocupados registrados."
@@ -456,29 +618,34 @@ class ConexionDB:
                 SELECT COUNT(*) FROM reservas
                 WHERE id_habitacion = %s AND estado = 'Confirmada'
                 """,
-                (id_habitacion,)
+                (id_hab,)
             )
-            (reservas_activas,) = cursor.fetchone()
+            reservas_activas = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
             if reservas_activas > 0:
                 cursor.close()
                 return False, "No se puede eliminar: el alojamiento tiene reservas activas."
 
             cursor.execute(
                 "SELECT COUNT(*) FROM reservas WHERE id_habitacion = %s",
-                (id_habitacion,)
+                (id_hab,)
             )
-            (reservas_historicas,) = cursor.fetchone()
+            reservas_historicas = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
 
             if reservas_historicas == 0:
                 cursor.execute(
                     "DELETE FROM habitaciones WHERE id_habitacion = %s",
-                    (id_habitacion,)
+                    (id_hab,)
                 )
             else:
                 cursor.execute(
                     "UPDATE habitaciones SET activa = 0 WHERE id_habitacion = %s",
-                    (id_habitacion,)
+                    (id_hab,)
                 )
+
+            if getattr(cursor, "rowcount", 1) == 0:
+                conn.rollback()
+                cursor.close()
+                return False, "El alojamiento seleccionado no existe."
 
             conn.commit()
             cursor.close()
@@ -491,26 +658,338 @@ class ConexionDB:
             if conn and conn.is_connected():
                 conn.close()
 
-    def verificar_disponibilidad_db(self, id_habitacion, dia_inicio_bd, dias_estadia):
+    def obtener_servicios(self, solo_disponibles=False):
+        """Obtiene el catálogo de servicios adicionales desde MySQL."""
+        if not self._esquema_asegurado:
+            self.asegurar_esquema()
+
+        conn = None
+        try:
+            conn = self.conectar()
+            cursor = conn.cursor(dictionary=True)
+            filtro = "WHERE disponible = 1" if solo_disponibles else ""
+            cursor.execute(
+                f"SELECT id_servicio, nombre, costo, disponible FROM servicios {filtro} ORDER BY id_servicio ASC"
+            )
+            filas = [
+                {
+                    "id_servicio": int(f["id_servicio"]),
+                    "nombre": str(f["nombre"]),
+                    "costo": int(f["costo"]),
+                    "disponible": bool(f["disponible"]),
+                }
+                for f in cursor.fetchall()
+            ]
+            cursor.close()
+            return filas
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def crear_servicio(self, nombre, costo, disponible=True):
         """
-        Subproceso TO-BE: Verifica directamente en la tabla ocupacion_diaria de MySQL
-        que ninguno de los días del rango esté ocupado antes de confirmar.
+        Crea un nuevo servicio adicional validando nombre (1..100), costo (1..MAX_INT_UNSIGNED)
+        y unicidad sin distinguir mayúsculas/minúsculas.
         """
+        if not self._esquema_asegurado:
+            self.asegurar_esquema()
+
+        if not isinstance(nombre, str):
+            return False, None, "El nombre del servicio debe ser una cadena de texto."
+        nombre_limpio = nombre.strip()
+        if not nombre_limpio or len(nombre_limpio) > 100:
+            return False, None, "El nombre del servicio debe tener entre 1 y 100 caracteres."
+
+        costo_val = _parsear_entero(costo, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if costo_val is None:
+            return False, None, "El costo del servicio debe ser un entero entre 1 y 4294967295."
+
+        conn = None
+        try:
+            conn = self.conectar()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT id_servicio FROM servicios WHERE LOWER(nombre) = LOWER(%s)",
+                (nombre_limpio,),
+            )
+            if cursor.fetchone() is not None:
+                cursor.close()
+                return False, None, f"Ya existe un servicio con el nombre '{nombre_limpio}'."
+
+            cursor.execute(
+                """
+                INSERT INTO servicios (nombre, costo, disponible)
+                VALUES (%s, %s, %s)
+                """,
+                (nombre_limpio, costo_val, 1 if disponible else 0),
+            )
+            id_nuevo = cursor.lastrowid
+            conn.commit()
+            cursor.close()
+            return True, id_nuevo, f"Servicio '{nombre_limpio}' creado exitosamente."
+        except Error as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, None, f"Error al crear servicio en MySQL: {e}"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def editar_servicio(self, id_servicio, nombre, costo):
+        """Actualiza nombre y costo en el catálogo sin modificar snapshots históricos."""
+        if not self._esquema_asegurado:
+            self.asegurar_esquema()
+
+        id_srv = _parsear_entero(id_servicio, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if id_srv is None:
+            return False, "Identificador de servicio inválido."
+
+        if not isinstance(nombre, str):
+            return False, "El nombre del servicio debe ser una cadena de texto."
+        nombre_limpio = nombre.strip()
+        if not nombre_limpio or len(nombre_limpio) > 100:
+            return False, "El nombre del servicio debe tener entre 1 y 100 caracteres."
+
+        costo_val = _parsear_entero(costo, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if costo_val is None:
+            return False, "El costo del servicio debe ser un entero entre 1 y 4294967295."
+
+        conn = None
+        try:
+            conn = self.conectar()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT id_servicio FROM servicios WHERE id_servicio = %s",
+                (id_srv,),
+            )
+            if cursor.fetchone() is None:
+                cursor.close()
+                return False, "El servicio seleccionado no existe."
+
+            cursor.execute(
+                """
+                SELECT id_servicio FROM servicios
+                WHERE LOWER(nombre) = LOWER(%s) AND id_servicio != %s
+                """,
+                (nombre_limpio, id_srv),
+            )
+            if cursor.fetchone() is not None:
+                cursor.close()
+                return False, f"Ya existe otro servicio con el nombre '{nombre_limpio}'."
+
+            cursor.execute(
+                """
+                UPDATE servicios
+                SET nombre = %s, costo = %s
+                WHERE id_servicio = %s
+                """,
+                (nombre_limpio, costo_val, id_srv),
+            )
+            conn.commit()
+            cursor.close()
+            return True, f"Servicio '{nombre_limpio}' actualizado exitosamente."
+        except Error as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, f"Error al editar servicio en MySQL: {e}"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def cambiar_disponibilidad_servicio(self, id_servicio, disponible=None):
+        """Habilita, deshabilita o invierte la disponibilidad de un servicio."""
+        if not self._esquema_asegurado:
+            self.asegurar_esquema()
+
+        id_srv = _parsear_entero(id_servicio, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if id_srv is None:
+            return False, None, "Identificador de servicio inválido."
+
+        conn = None
+        try:
+            conn = self.conectar()
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT id_servicio, nombre, disponible FROM servicios WHERE id_servicio = %s",
+                (id_srv,),
+            )
+            fila = cursor.fetchone()
+            if fila is None:
+                cursor.close()
+                return False, None, "El servicio seleccionado no existe."
+
+            nuevo_estado = (
+                (not bool(fila["disponible"]))
+                if disponible is None
+                else bool(disponible)
+            )
+            cursor.execute(
+                "UPDATE servicios SET disponible = %s WHERE id_servicio = %s",
+                (1 if nuevo_estado else 0, id_srv),
+            )
+            conn.commit()
+            cursor.close()
+            estado_txt = "habilitado" if nuevo_estado else "deshabilitado"
+            return True, nuevo_estado, f"Servicio '{fila['nombre']}' {estado_txt} exitosamente."
+        except Error as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, None, f"Error al cambiar disponibilidad del servicio en MySQL: {e}"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def _resolver_servicios_para_persistencia(
+        self,
+        cursor,
+        servicios,
+        dias_estadia,
+        incluye_desayuno=False,
+        incluye_estacionamiento=False,
+    ):
+        """
+        Normaliza y deduplica servicios a persistir en 'reserva_servicios',
+        resolviendo IDs por nombre o aplicando compatibilidad heredada si aplica.
+        """
+        resueltos = []
+        vistos = set()
+
+        if servicios:
+            for item in servicios:
+                if not isinstance(item, dict):
+                    continue
+                raw_id = item.get("id_servicio")
+                id_srv = _parsear_entero(raw_id, minimo=1, maximo=MAX_INT_UNSIGNED) if raw_id is not None else None
+
+                raw_nombre = item.get("nombre")
+                if raw_nombre is None:
+                    raw_nombre = item.get("nombre_snapshot", "")
+                nombre = str(raw_nombre).strip()
+
+                raw_costo = item.get("costo_unitario")
+                if raw_costo is None:
+                    raw_costo = item.get("costo_unitario_snapshot")
+                if raw_costo is None:
+                    raw_costo = item.get("costo")
+
+                if id_srv is None:
+                    if not nombre:
+                        raise ValueError("Servicio sin identificador ni nombre.")
+                    cursor.execute(
+                        "SELECT id_servicio, nombre, costo FROM servicios WHERE LOWER(nombre) = LOWER(%s)",
+                        (nombre,),
+                    )
+                    fila_srv = cursor.fetchone()
+                    if fila_srv is None:
+                        raise ValueError(f"El servicio '{nombre}' no existe en el catálogo.")
+                    id_srv = int(_extraer_campo(fila_srv, "id_servicio", 0))
+                    if not nombre:
+                        nombre = str(_extraer_campo(fila_srv, "nombre", 1))
+                    if raw_costo is None:
+                        raw_costo = _extraer_campo(fila_srv, "costo", 2)
+
+                if id_srv in vistos:
+                    continue
+                vistos.add(id_srv)
+
+                costo_u = _parsear_entero(raw_costo, minimo=0, maximo=MAX_INT_UNSIGNED)
+                if costo_u is None:
+                    raise ValueError(f"Costo inválido para el servicio '{nombre}'.")
+
+                raw_subtotal = item.get("subtotal")
+                if raw_subtotal is None:
+                    subtotal = costo_u * dias_estadia
+                else:
+                    subtotal = _parsear_entero(raw_subtotal, minimo=0, maximo=MAX_INT_UNSIGNED)
+                    if subtotal is None:
+                        raise ValueError(f"Subtotal inválido para el servicio '{nombre}'.")
+
+                resueltos.append({
+                    "id_servicio": id_srv,
+                    "nombre": nombre,
+                    "costo_unitario": costo_u,
+                    "subtotal": subtotal,
+                })
+            return resueltos
+
+        if incluye_desayuno or incluye_estacionamiento:
+            cursor.execute(
+                """
+                SELECT id_servicio, nombre, costo
+                FROM servicios
+                WHERE LOWER(nombre) IN ('desayuno', 'estacionamiento')
+                ORDER BY id_servicio ASC
+                """
+            )
+            for fila_srv in cursor.fetchall():
+                id_srv = int(_extraer_campo(fila_srv, "id_servicio", 0))
+                nombre_srv = str(_extraer_campo(fila_srv, "nombre", 1))
+                costo_srv = int(_extraer_campo(fila_srv, "costo", 2))
+                nombre_lower = nombre_srv.strip().lower()
+                incluir = (
+                    (incluye_desayuno and "desayuno" in nombre_lower)
+                    or (incluye_estacionamiento and "estacionamiento" in nombre_lower)
+                )
+                if incluir and id_srv not in vistos:
+                    vistos.add(id_srv)
+                    resueltos.append({
+                        "id_servicio": id_srv,
+                        "nombre": nombre_srv,
+                        "costo_unitario": costo_srv,
+                        "subtotal": costo_srv * dias_estadia,
+                    })
+        return resueltos
+
+    def verificar_disponibilidad_db(
+        self,
+        id_habitacion,
+        dia_inicio_bd,
+        dias_estadia,
+        excluir_id_reserva=None,
+    ):
+        """
+        Verifica directamente en 'ocupacion_diaria' que ninguno de los días del rango
+        esté ocupado (excluyendo opcionalmente la reserva en edición).
+        """
+        id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
+        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=30)
+        dias = _parsear_entero(dias_estadia, minimo=1, maximo=30)
+        if id_hab is None or dia_ini is None or dias is None or (dia_ini + dias - 1) > 30:
+            return False
+
+        excluir_id = None
+        if excluir_id_reserva is not None:
+            excluir_id = _parsear_entero(excluir_id_reserva, minimo=1, maximo=MAX_INT_UNSIGNED)
+            if excluir_id is None:
+                return False
+
         conn = None
         try:
             conn = self.conectar()
             cursor = conn.cursor()
-            dia_fin_bd = dia_inicio_bd + dias_estadia - 1
-            cursor.execute(
-                """
-                SELECT COUNT(*) FROM ocupacion_diaria
-                WHERE id_habitacion = %s
-                  AND dia_mes BETWEEN %s AND %s
-                  AND ocupada = 1
-                """,
-                (id_habitacion, dia_inicio_bd, dia_fin_bd)
-            )
-            (ocupadas,) = cursor.fetchone()
+            dia_fin_bd = dia_ini + dias - 1
+            if excluir_id is None:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM ocupacion_diaria
+                    WHERE id_habitacion = %s
+                      AND dia_mes BETWEEN %s AND %s
+                      AND ocupada = 1
+                    """,
+                    (id_hab, dia_ini, dia_fin_bd),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM ocupacion_diaria
+                    WHERE id_habitacion = %s
+                      AND dia_mes BETWEEN %s AND %s
+                      AND ocupada = 1
+                      AND (id_reserva IS NULL OR id_reserva != %s)
+                    """,
+                    (id_hab, dia_ini, dia_fin_bd, excluir_id),
+                )
+            ocupadas = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
             cursor.close()
             return ocupadas == 0
         finally:
@@ -520,18 +999,51 @@ class ConexionDB:
     def guardar_reserva_transaccional(self, nueva_reserva, id_habitacion):
         """
         Guarda de forma atómica (transacción SQL):
-        1. El huésped en la tabla 'huespedes' (o actualiza sus datos si el RUT ya existe).
-        2. La reserva en la tabla 'reservas'.
-        3. Los días bloqueados en la tabla 'ocupacion_diaria' (matriz en BD).
+        1. Verifica conflicto en 'ocupacion_diaria' con bloqueo FOR UPDATE.
+        2. Inserta/actualiza el huésped en 'huespedes'.
+        3. Inserta la reserva en 'reservas' y sus snapshots en 'reserva_servicios'.
+        4. Marca los días en 'ocupacion_diaria' (ON DUPLICATE KEY UPDATE).
+        5. Asigna nueva_reserva.id_reserva tras confirmar el commit.
         """
+        if nueva_reserva is None:
+            return False
+        huesped = getattr(nueva_reserva, "huesped", None)
+        if huesped is None or not all(hasattr(huesped, attr) for attr in ("rut", "nombre", "telefono")):
+            return False
+        id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
+        dia_inicio_py = _parsear_entero(getattr(nueva_reserva, "dia_inicio", None), minimo=0, maximo=29)
+        dias = _parsear_entero(getattr(nueva_reserva, "dias_estadia", None), minimo=1, maximo=30)
+        total_val = _parsear_entero(getattr(nueva_reserva, "total", None), minimo=0, maximo=MAX_INT_UNSIGNED)
+        if id_hab is None or dia_inicio_py is None or dias is None or total_val is None:
+            return False
+
+        dia_inicio_bd = dia_inicio_py + 1
+        dia_fin_bd = dia_inicio_bd + dias - 1
+        if dia_fin_bd > 30:
+            return False
+
         conn = None
         try:
             conn = self.conectar()
             conn.start_transaction()
             cursor = conn.cursor()
 
-            # 1. Insertar o recuperar el huésped por su RUT
-            huesped = nueva_reserva.huesped
+            cursor.execute(
+                """
+                SELECT COUNT(*) FROM ocupacion_diaria
+                WHERE id_habitacion = %s
+                  AND dia_mes BETWEEN %s AND %s
+                  AND ocupada = 1
+                FOR UPDATE
+                """,
+                (id_hab, dia_inicio_bd, dia_fin_bd),
+            )
+            ocupadas = _extraer_campo(cursor.fetchone(), "COUNT(*)", 0) or 0
+            if ocupadas > 0:
+                conn.rollback()
+                cursor.close()
+                return False
+
             cursor.execute(
                 """
                 INSERT INTO huespedes (rut, nombre, telefono)
@@ -541,14 +1053,21 @@ class ConexionDB:
                     telefono = VALUES(telefono),
                     id_huesped = LAST_INSERT_ID(id_huesped)
                 """,
-                (huesped.rut, huesped.nombre, huesped.telefono)
+                (huesped.rut, huesped.nombre, huesped.telefono),
             )
             id_huesped = cursor.lastrowid
 
-            # En Python dia_inicio es índice 0..29; en MySQL es día calendario 1..30
-            dia_inicio_bd = nueva_reserva.dia_inicio + 1
+            incluye_desayuno = bool(getattr(nueva_reserva, "incluye_desayuno", False))
+            incluye_estacionamiento = bool(getattr(nueva_reserva, "incluye_estacionamiento", False))
+            servicios_actuales = list(getattr(nueva_reserva, "servicios", []) or [])
+            servicios_resueltos = self._resolver_servicios_para_persistencia(
+                cursor,
+                servicios_actuales,
+                dias,
+                incluye_desayuno=incluye_desayuno,
+                incluye_estacionamiento=incluye_estacionamiento,
+            )
 
-            # 2. Insertar el registro en la tabla 'reservas'
             cursor.execute(
                 """
                 INSERT INTO reservas (
@@ -567,39 +1086,302 @@ class ConexionDB:
                 """,
                 (
                     id_huesped,
-                    id_habitacion,
+                    id_hab,
                     dia_inicio_bd,
-                    nueva_reserva.dias_estadia,
-                    1 if nueva_reserva.incluye_desayuno else 0,
-                    1 if nueva_reserva.incluye_estacionamiento else 0,
-                    nueva_reserva.total,
-                    nueva_reserva.estado,
+                    dias,
+                    1 if incluye_desayuno else 0,
+                    1 if incluye_estacionamiento else 0,
+                    total_val,
+                    getattr(nueva_reserva, "estado", "Confirmada") or "Confirmada",
                     getattr(nueva_reserva, "habitacion_nombre", None),
                     getattr(nueva_reserva, "tipo_alojamiento", None),
-                    getattr(nueva_reserva, "tarifa_base_snapshot", None)
-                )
+                    getattr(nueva_reserva, "tarifa_base_snapshot", None),
+                ),
             )
             id_reserva = cursor.lastrowid
 
-            # 3. Bloquear cada día en la tabla 'ocupacion_diaria' (matriz en BD)
-            for d_offset in range(nueva_reserva.dias_estadia):
+            for srv in servicios_resueltos:
+                cursor.execute(
+                    """
+                    INSERT INTO reserva_servicios (
+                        id_reserva,
+                        id_servicio,
+                        nombre_snapshot,
+                        costo_unitario_snapshot,
+                        subtotal
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        id_reserva,
+                        srv["id_servicio"],
+                        srv["nombre"],
+                        srv["costo_unitario"],
+                        srv["subtotal"],
+                    ),
+                )
+
+            for d_offset in range(dias):
                 dia_mes = dia_inicio_bd + d_offset
                 cursor.execute(
                     """
                     INSERT INTO ocupacion_diaria (id_habitacion, dia_mes, ocupada, id_reserva)
                     VALUES (%s, %s, 1, %s)
+                    ON DUPLICATE KEY UPDATE
+                        ocupada = 1,
+                        id_reserva = VALUES(id_reserva)
                     """,
-                    (id_habitacion, dia_mes, id_reserva)
+                    (id_hab, dia_mes, id_reserva),
                 )
 
             conn.commit()
             cursor.close()
+            nueva_reserva.id_reserva = id_reserva
+            if not servicios_actuales and servicios_resueltos:
+                nueva_reserva.servicios = [dict(s) for s in servicios_resueltos]
             return True
-        except Error as e:
+        except (Error, ValueError) as e:
             if conn and conn.is_connected():
                 conn.rollback()
             print(f"Error al guardar la reserva en MySQL: {e}")
             return False
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def editar_reserva_transaccional(
+        self,
+        id_reserva,
+        id_habitacion,
+        dia_inicio_bd,
+        dias_estadia,
+        monto_total,
+        servicios,
+        habitacion_nombre=None,
+        tipo_alojamiento=None,
+        tarifa_base_snapshot=None,
+    ):
+        """
+        Actualiza atómicamente una reserva en estado 'Confirmada', revalidando
+        disponibilidad excluyendo su propia ocupación y reemplazando sus snapshots de servicios.
+        """
+        id_res = _parsear_entero(id_reserva, minimo=1, maximo=MAX_INT_UNSIGNED)
+        id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)
+        dia_ini = _parsear_entero(dia_inicio_bd, minimo=1, maximo=30)
+        dias = _parsear_entero(dias_estadia, minimo=1, maximo=30)
+        total_val = _parsear_entero(monto_total, minimo=0, maximo=MAX_INT_UNSIGNED)
+
+        if id_res is None or id_hab is None or dia_ini is None or dias is None or total_val is None:
+            return False, "Parámetros inválidos para editar la reserva."
+        dia_fin = dia_ini + dias - 1
+        if dia_fin > 30:
+            return False, "El rango de días excede el límite del mes (1..30)."
+
+        conn = None
+        try:
+            conn = self.conectar()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                "SELECT id_reserva, estado FROM reservas WHERE id_reserva = %s FOR UPDATE",
+                (id_res,),
+            )
+            fila_res = cursor.fetchone()
+            if fila_res is None:
+                conn.rollback()
+                cursor.close()
+                return False, "La reserva seleccionada no existe."
+            if _extraer_campo(fila_res, "estado", 1) != "Confirmada":
+                conn.rollback()
+                cursor.close()
+                return False, "Solo se pueden editar reservas en estado 'Confirmada'."
+
+            cursor.execute(
+                """
+                SELECT id_habitacion, tipo, numero_habitacion, tarifa_base_noche, activa
+                FROM habitaciones
+                WHERE id_habitacion = %s
+                FOR UPDATE
+                """,
+                (id_hab,),
+            )
+            fila_hab = cursor.fetchone()
+            if fila_hab is None or not bool(_extraer_campo(fila_hab, "activa", 4)):
+                conn.rollback()
+                cursor.close()
+                return False, "El alojamiento seleccionado no existe o no está activo."
+
+            hab_nombre_final = (
+                habitacion_nombre
+                if habitacion_nombre is not None
+                else _extraer_campo(fila_hab, "numero_habitacion", 2)
+            )
+            tipo_aloj_final = (
+                tipo_alojamiento
+                if tipo_alojamiento is not None
+                else _extraer_campo(fila_hab, "tipo", 1)
+            )
+            tarifa_snap_final = (
+                tarifa_base_snapshot
+                if tarifa_base_snapshot is not None
+                else int(_extraer_campo(fila_hab, "tarifa_base_noche", 3))
+            )
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS ocupadas
+                FROM ocupacion_diaria
+                WHERE id_habitacion = %s
+                  AND dia_mes BETWEEN %s AND %s
+                  AND ocupada = 1
+                  AND (id_reserva IS NULL OR id_reserva != %s)
+                FOR UPDATE
+                """,
+                (id_hab, dia_ini, dia_fin, id_res),
+            )
+            ocupadas = _extraer_campo(cursor.fetchone(), "ocupadas", 0) or 0
+            if ocupadas > 0:
+                conn.rollback()
+                cursor.close()
+                return False, "El alojamiento no está disponible para las fechas seleccionadas."
+
+            servicios_norm = self._resolver_servicios_para_persistencia(
+                cursor,
+                servicios or [],
+                dias,
+                incluye_desayuno=False,
+                incluye_estacionamiento=False,
+            )
+            nombres_lower = [s["nombre"].strip().lower() for s in servicios_norm]
+            incluye_des = 1 if any("desayuno" in n for n in nombres_lower) else 0
+            incluye_est = 1 if any("estacionamiento" in n for n in nombres_lower) else 0
+
+            cursor.execute(
+                "DELETE FROM ocupacion_diaria WHERE id_reserva = %s",
+                (id_res,),
+            )
+
+            cursor.execute(
+                """
+                UPDATE reservas
+                SET id_habitacion = %s,
+                    dia_inicio = %s,
+                    dias_estadia = %s,
+                    incluye_desayuno = %s,
+                    incluye_estacionamiento = %s,
+                    monto_total = %s,
+                    habitacion_nombre = %s,
+                    tipo_alojamiento = %s,
+                    tarifa_base_snapshot = %s
+                WHERE id_reserva = %s
+                """,
+                (
+                    id_hab,
+                    dia_ini,
+                    dias,
+                    incluye_des,
+                    incluye_est,
+                    total_val,
+                    hab_nombre_final,
+                    tipo_aloj_final,
+                    tarifa_snap_final,
+                    id_res,
+                ),
+            )
+
+            cursor.execute(
+                "DELETE FROM reserva_servicios WHERE id_reserva = %s",
+                (id_res,),
+            )
+            for srv in servicios_norm:
+                cursor.execute(
+                    """
+                    INSERT INTO reserva_servicios (
+                        id_reserva,
+                        id_servicio,
+                        nombre_snapshot,
+                        costo_unitario_snapshot,
+                        subtotal
+                    ) VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        id_res,
+                        srv["id_servicio"],
+                        srv["nombre"],
+                        srv["costo_unitario"],
+                        srv["subtotal"],
+                    ),
+                )
+
+            for d_offset in range(dias):
+                dia_mes = dia_ini + d_offset
+                cursor.execute(
+                    """
+                    INSERT INTO ocupacion_diaria (id_habitacion, dia_mes, ocupada, id_reserva)
+                    VALUES (%s, %s, 1, %s)
+                    ON DUPLICATE KEY UPDATE
+                        ocupada = 1,
+                        id_reserva = VALUES(id_reserva)
+                    """,
+                    (id_hab, dia_mes, id_res),
+                )
+
+            conn.commit()
+            cursor.close()
+            return True, "Reserva actualizada exitosamente."
+        except (Error, ValueError) as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, f"Error al editar reserva en MySQL: {e}"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def cancelar_reserva_transaccional(self, id_reserva):
+        """
+        Cancela lógicamente una reserva (estado = 'Cancelada') y libera sus días
+        en 'ocupacion_diaria', conservando intacto el registro histórico y sus servicios.
+        """
+        id_res = _parsear_entero(id_reserva, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if id_res is None:
+            return False, "Identificador de reserva inválido."
+
+        conn = None
+        try:
+            conn = self.conectar()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+
+            cursor.execute(
+                "SELECT id_reserva, estado FROM reservas WHERE id_reserva = %s FOR UPDATE",
+                (id_res,),
+            )
+            fila_res = cursor.fetchone()
+            if fila_res is None:
+                conn.rollback()
+                cursor.close()
+                return False, "La reserva seleccionada no existe."
+            if _extraer_campo(fila_res, "estado", 1) != "Confirmada":
+                conn.rollback()
+                cursor.close()
+                return False, "Solo se pueden cancelar reservas en estado 'Confirmada'."
+
+            cursor.execute(
+                "UPDATE reservas SET estado = 'Cancelada' WHERE id_reserva = %s",
+                (id_res,),
+            )
+            cursor.execute(
+                "DELETE FROM ocupacion_diaria WHERE id_reserva = %s",
+                (id_res,),
+            )
+
+            conn.commit()
+            cursor.close()
+            return True, "Reserva cancelada exitosamente."
+        except Error as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, f"Error al cancelar reserva en MySQL: {e}"
         finally:
             if conn and conn.is_connected():
                 conn.close()

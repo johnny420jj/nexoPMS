@@ -19,11 +19,17 @@ class NexoPMS:
     def __init__(self, db=None):
         self.db = db if db is not None else ConexionDB()
 
-        # Vectores paralelos (valores por defecto si la tabla aún no ha sido leída)
+        # Vectores paralelos de alojamientos (valores por defecto si la tabla aún no ha sido leída)
         self.ids_habitaciones = [1, 2, 3, 4]
         self.tipos_habitaciones = ["Habitación", "Habitación", "Habitación", "Habitación"]
         self.habitaciones = ["101", "102", "103", "104"]
         self.tarifas = [45000, 45000, 60000, 70000]
+
+        # Vectores paralelos de servicios adicionales (respaldo si la BD aún no responde)
+        self.servicios_ids = [1, 2]
+        self.servicios_nombres = ["Desayuno", "Estacionamiento"]
+        self.servicios_costos = [self.COSTO_DESAYUNO_NOCHE, self.COSTO_ESTACIONAMIENTO_NOCHE]
+        self.servicios_disponibles = [True, True]
 
         # Matriz de disponibilidad: 4 habitaciones x 30 días (0: Libre, 1: Ocupada)
         self.dias_mes = 30
@@ -103,10 +109,55 @@ class NexoPMS:
         """Retorna True si hay sesión iniciada con rol 'admin'."""
         return bool(self.usuario_actual and self.usuario_actual.get("rol") == "admin")
 
+    def _es_gerente(self):
+        """Retorna True si hay sesión iniciada con rol 'gerente'."""
+        return bool(self.usuario_actual and self.usuario_actual.get("rol") == "gerente")
+
+    def _es_recepcionista(self):
+        """Retorna True si hay sesión iniciada con rol 'recepcionista'."""
+        return bool(self.usuario_actual and self.usuario_actual.get("rol") == "recepcionista")
+
+    def _puede_ver_reportes(self):
+        """Retorna True si el usuario actual es 'admin' o 'gerente' (o uso programático sin sesión)."""
+        if self.usuario_actual is None:
+            return True
+        return self.usuario_actual.get("rol") in ("admin", "gerente")
+
+    def _puede_registrar_reserva(self):
+        """Retorna True si el usuario actual puede registrar reservas ('recepcionista' o 'admin')."""
+        if self.usuario_actual is None:
+            return True
+        return self.usuario_actual.get("rol") in ("admin", "recepcionista")
+
+    def sincronizar_servicios(self):
+        """Sincroniza los vectores paralelos del catálogo de servicios desde la base de datos."""
+        if not hasattr(self.db, "obtener_servicios"):
+            return False
+        try:
+            filas_srv = self.db.obtener_servicios(solo_disponibles=False)
+            if isinstance(filas_srv, list):
+                ids_tmp = []
+                nombres_tmp = []
+                costos_tmp = []
+                disp_tmp = []
+                for s in filas_srv:
+                    ids_tmp.append(int(s["id_servicio"]))
+                    nombres_tmp.append(str(s["nombre"]))
+                    costos_tmp.append(int(s["costo"]))
+                    disp_tmp.append(bool(s["disponible"]))
+                self.servicios_ids = ids_tmp
+                self.servicios_nombres = nombres_tmp
+                self.servicios_costos = costos_tmp
+                self.servicios_disponibles = disp_tmp
+                return True
+        except Exception:
+            return False
+        return False
+
     def cargar_datos(self):
         """
-        Carga los vectores paralelos (habitaciones, tipos y tarifas), la matriz de disponibilidad
-        y las reservas activas directamente desde la base de datos MySQL (nexopms_db).
+        Carga los vectores paralelos (habitaciones, tipos, tarifas y servicios), la matriz de
+        disponibilidad y las reservas activas directamente desde la base de datos MySQL (nexopms_db).
         """
         try:
             if not self._esquema_inicializado and hasattr(self.db, "asegurar_esquema"):
@@ -120,6 +171,9 @@ class NexoPMS:
                 self.tipos_habitaciones = [str(f.get("tipo") or "Habitación") for f in filas_hab]
                 self.habitaciones = [str(f["numero_habitacion"]) for f in filas_hab]
                 self.tarifas = [int(f["tarifa_base_noche"]) for f in filas_hab]
+
+            # 1b. Sincronizar vectores paralelos del catálogo de servicios
+            self.sincronizar_servicios()
 
             # Reiniciar matriz y lista de reservas en memoria antes de consultar ocupación/reservas
             self.matriz_disponibilidad = [
@@ -160,6 +214,8 @@ class NexoPMS:
                     habitacion_nombre=r.get("habitacion_nombre"),
                     tipo_alojamiento=r.get("tipo_alojamiento"),
                     tarifa_base_snapshot=r.get("tarifa_base_snapshot"),
+                    id_reserva=r.get("id_reserva"),
+                    servicios=r.get("servicios") or None,
                 )
                 self.reservas.append(reserva)
 
@@ -237,7 +293,8 @@ class NexoPMS:
         print("[ ] = Libre  |  [X] = Ocupada\n")
 
     def consultar_tarifas(self):
-        """Muestra las tarifas base de habitaciones/cabañas y servicios adicionales."""
+        """Muestra las tarifas base de habitaciones/cabañas y servicios adicionales disponibles."""
+        self.sincronizar_servicios()
         print("\n--- TARIFARIO BASE Y SERVICIOS ADICIONALES ---")
         if not self.habitaciones:
             print("No hay alojamientos registrados.")
@@ -246,8 +303,18 @@ class NexoPMS:
                 tipo = self.tipos_habitaciones[i] if i < len(self.tipos_habitaciones) else "Habitación"
                 print(f"{tipo} {hab}: ${self.tarifas[i]:,} / noche")
         print("-" * 46)
-        print(f"Servicio Desayuno       : ${self.COSTO_DESAYUNO_NOCHE:,} / noche")
-        print(f"Servicio Estacionamiento: ${self.COSTO_ESTACIONAMIENTO_NOCHE:,} / noche")
+        servicios_activos = [
+            (nombre, costo)
+            for nombre, costo, disponible in zip(
+                self.servicios_nombres, self.servicios_costos, self.servicios_disponibles
+            )
+            if disponible
+        ]
+        if servicios_activos:
+            for nombre, costo in servicios_activos:
+                print(f"Servicio {nombre:<15}: ${costo:,} / noche")
+        else:
+            print("No hay servicios adicionales disponibles.")
         print("----------------------------------------------\n")
 
     def confirmar_y_guardar_reserva(self, nueva_reserva, hab_idx, dia_inicio, dias_estadia):
@@ -257,6 +324,9 @@ class NexoPMS:
         """
         if not (0 <= hab_idx < len(self.ids_habitaciones)):
             print("Error de validación: Índice de alojamiento fuera de rango.")
+            return False
+        if dia_inicio < 0 or dias_estadia < 1 or dia_inicio + dias_estadia > self.dias_mes:
+            print("Error de validación: Rango de fechas fuera de los límites del calendario.")
             return False
 
         # 1. Validación en matriz en memoria
@@ -310,7 +380,11 @@ class NexoPMS:
         return None
 
     def registrar_reserva(self):
-        """Flujo de consola para cotizar y registrar una nueva reserva."""
+        """Flujo de consola para cotizar y registrar una nueva reserva con servicios dinámicos."""
+        if not self._puede_registrar_reserva():
+            print("Acceso denegado: el rol gerente no está autorizado para registrar nuevas reservas.")
+            return
+
         print("\n--- NUEVA RESERVA ---")
         self.cargar_datos()
         self.mostrar_matriz_disponibilidad()
@@ -363,39 +437,49 @@ class NexoPMS:
         if telefono is None:
             return
 
-        # Compuerta Inclusiva (OR): Servicios adicionales
+        # Selección dinámica de servicios adicionales habilitados en el catálogo
         print("\n--- SERVICIOS ADICIONALES (Opcionales) ---")
-        incluye_desayuno = self._leer_si_no(
-            f"¿Desea incluir Desayuno (${self.COSTO_DESAYUNO_NOCHE:,}/noche)? (s/n): "
-        )
-        if incluye_desayuno is None:
-            return
+        servicios_disponibles_idx = [
+            i for i, disp in enumerate(self.servicios_disponibles) if disp
+        ]
+        servicios_seleccionados = []
+        if not servicios_disponibles_idx:
+            print("No hay servicios adicionales disponibles en este momento.")
+        else:
+            for i in servicios_disponibles_idx:
+                nombre_srv = self.servicios_nombres[i]
+                costo_srv = self.servicios_costos[i]
+                incluir = self._leer_si_no(
+                    f"¿Desea incluir {nombre_srv} (${costo_srv:,}/noche)? (s/n): "
+                )
+                if incluir is None:
+                    return
+                if incluir:
+                    servicios_seleccionados.append({
+                        "id_servicio": self.servicios_ids[i],
+                        "nombre": nombre_srv,
+                        "costo_unitario": costo_srv,
+                        "subtotal": costo_srv * dias_estadia,
+                    })
 
-        incluye_estacionamiento = self._leer_si_no(
-            f"¿Desea incluir Estacionamiento (${self.COSTO_ESTACIONAMIENTO_NOCHE:,}/noche)? (s/n): "
-        )
-        if incluye_estacionamiento is None:
-            return
-
-        # Cálculo de tarifa según fórmula: (Tarifa_Base + Costo_Desayuno + Costo_Estacionamiento) * Noches_Estadia
+        # Cálculo de tarifa: (Tarifa_Base + Sum(Costos_Servicios)) * Noches_Estadia
         tarifa_base = self.tarifas[hab_idx]
-        costo_desayuno = self.COSTO_DESAYUNO_NOCHE if incluye_desayuno else 0
-        costo_estacionamiento = self.COSTO_ESTACIONAMIENTO_NOCHE if incluye_estacionamiento else 0
-        tarifa_diaria_total = tarifa_base + costo_desayuno + costo_estacionamiento
+        costo_servicios_noche = sum(s["costo_unitario"] for s in servicios_seleccionados)
+        tarifa_diaria_total = tarifa_base + costo_servicios_noche
         costo_total = tarifa_diaria_total * dias_estadia
 
         print("\n--- RESUMEN DE COTIZACIÓN ---")
         print(f"{tipo_hab} {hab_nombre} (Tarifa base): ${tarifa_base:,} / noche")
+        if servicios_seleccionados:
+            for s in servicios_seleccionados:
+                print(
+                    f"{s['nombre']:<29}: "
+                    f"Sí (${s['costo_unitario']:,}/noche | Subtotal: ${s['subtotal']:,})"
+                )
+        else:
+            print("Servicios adicionales        : Ninguno ($0)")
         print(
-            f"Desayuno                     : "
-            f"{'Sí ($' + format(costo_desayuno, ',') + '/noche)' if incluye_desayuno else 'No ($0)'}"
-        )
-        print(
-            f"Estacionamiento              : "
-            f"{'Sí ($' + format(costo_estacionamiento, ',') + '/noche)' if incluye_estacionamiento else 'No ($0)'}"
-        )
-        print(
-            f"Fórmula: (${tarifa_base:,} + ${costo_desayuno:,} + ${costo_estacionamiento:,}) "
+            f"Fórmula: (${tarifa_base:,} + ${costo_servicios_noche:,}) "
             f"x {dias_estadia} noche(s) = ${costo_total:,}"
         )
 
@@ -408,19 +492,32 @@ class NexoPMS:
                 dia_inicio,
                 dias_estadia,
                 costo_total,
-                incluye_desayuno=incluye_desayuno,
-                incluye_estacionamiento=incluye_estacionamiento,
                 estado="Confirmada",
                 habitacion_nombre=hab_nombre,
                 tipo_alojamiento=tipo_hab,
                 tarifa_base_snapshot=tarifa_base,
+                servicios=servicios_seleccionados,
             )
             self.confirmar_y_guardar_reserva(nueva_reserva, hab_idx, dia_inicio, dias_estadia)
         else:
             print("Reserva cancelada.")
 
+    def _formatear_servicios_reserva(self, reserva):
+        """Obtiene la representación legible de servicios contratados (con respaldo heredado)."""
+        servicios_nombres = [
+            str(s["nombre"])
+            for s in (getattr(reserva, "servicios", None) or [])
+            if s.get("nombre")
+        ]
+        if not servicios_nombres:
+            if getattr(reserva, "incluye_desayuno", False):
+                servicios_nombres.append("Desayuno")
+            if getattr(reserva, "incluye_estacionamiento", False):
+                servicios_nombres.append("Estacionamiento")
+        return ", ".join(servicios_nombres) if servicios_nombres else "Ninguno"
+
     def ver_reservas_activas(self):
-        """Lista todas las reservas registradas en la base de datos MySQL."""
+        """Lista todas las reservas activas registradas en la base de datos MySQL."""
         self.cargar_datos()
         print("\n--- RESERVAS ACTIVAS (MySQL) ---")
         if not self.reservas:
@@ -442,19 +539,539 @@ class NexoPMS:
             else:
                 tipo_hab = "Habitación"
 
-            servicios = []
-            if r.incluye_desayuno:
-                servicios.append("Desayuno")
-            if r.incluye_estacionamiento:
-                servicios.append("Estacionamiento")
-            texto_servicios = ", ".join(servicios) if servicios else "Ninguno"
+            texto_servicios = self._formatear_servicios_reserva(r)
+            prefijo_id = f"ID #{r.id_reserva} | " if getattr(r, "id_reserva", None) is not None else ""
 
             print(
-                f"Estado: [{r.estado}] | Huésped: {r.huesped.nombre} (RUT: {r.huesped.rut}) | "
+                f"{prefijo_id}Estado: [{r.estado}] | Huésped: {r.huesped.nombre} (RUT: {r.huesped.rut}) | "
                 f"{tipo_hab}: {hab_num} | Ingreso: Día {r.dia_inicio + 1} | Noches: {r.dias_estadia} | "
                 f"Servicios: {texto_servicios} | Total: ${r.total:,}"
             )
         print("--------------------------------\n")
+
+    @staticmethod
+    def _es_entero_estricto(valor):
+        """Retorna True si valor es int (excluyendo bool y float)."""
+        return isinstance(valor, int) and not isinstance(valor, bool)
+
+    def _sintetizar_servicios_legacy(self, reserva):
+        """Reconstruye servicios desde flags heredados cuando una reserva previa no tiene lista."""
+        sintetizados = []
+        for id_srv, nombre, costo in zip(
+            self.servicios_ids, self.servicios_nombres, self.servicios_costos
+        ):
+            nl = nombre.strip().lower()
+            incluir = (
+                (getattr(reserva, "incluye_desayuno", False) and "desayuno" in nl)
+                or (getattr(reserva, "incluye_estacionamiento", False) and "estacionamiento" in nl)
+            )
+            if incluir:
+                sintetizados.append({
+                    "id_servicio": id_srv,
+                    "nombre": nombre,
+                    "costo_unitario": costo,
+                    "subtotal": costo * reserva.dias_estadia,
+                })
+        return sintetizados
+
+    def _normalizar_servicios_edicion(self, servicios_base, dias_final):
+        """Normaliza, deduplica y recalcula subtotales de servicios para una edición de reserva."""
+        if not isinstance(servicios_base, (list, tuple)):
+            raise ValueError("El listado de servicios debe ser una lista o tupla.")
+
+        resueltos = []
+        vistos = set()
+        for item in servicios_base:
+            if self._es_entero_estricto(item):
+                if item not in self.servicios_ids:
+                    raise ValueError(f"El servicio con ID {item} no existe en el catálogo.")
+                idx = self.servicios_ids.index(item)
+                id_srv = self.servicios_ids[idx]
+                nombre = self.servicios_nombres[idx]
+                costo_u = self.servicios_costos[idx]
+            elif isinstance(item, str):
+                nombre_buscado = item.strip().lower()
+                match_idx = next(
+                    (i for i, n in enumerate(self.servicios_nombres) if n.strip().lower() == nombre_buscado),
+                    None,
+                )
+                if match_idx is None:
+                    raise ValueError(f"El servicio '{item}' no existe en el catálogo.")
+                id_srv = self.servicios_ids[match_idx]
+                nombre = self.servicios_nombres[match_idx]
+                costo_u = self.servicios_costos[match_idx]
+            elif isinstance(item, dict):
+                raw_id = item.get("id_servicio")
+                if raw_id is not None:
+                    if not self._es_entero_estricto(raw_id) or raw_id < 1:
+                        raise ValueError("Identificador de servicio inválido.")
+                    id_srv = raw_id
+                else:
+                    id_srv = None
+
+                raw_nombre = item.get("nombre")
+                if raw_nombre is None:
+                    raw_nombre = item.get("nombre_snapshot")
+                nombre = str(raw_nombre).strip() if raw_nombre is not None else ""
+
+                raw_costo = item.get("costo_unitario")
+                if raw_costo is None:
+                    raw_costo = item.get("costo_unitario_snapshot")
+                if raw_costo is None:
+                    raw_costo = item.get("costo")
+
+                if id_srv is None:
+                    if not nombre:
+                        raise ValueError("Servicio sin identificador ni nombre.")
+                    match_idx = next(
+                        (i for i, n in enumerate(self.servicios_nombres) if n.strip().lower() == nombre.lower()),
+                        None,
+                    )
+                    if match_idx is None:
+                        raise ValueError(f"El servicio '{nombre}' no existe en el catálogo.")
+                    id_srv = self.servicios_ids[match_idx]
+                    nombre = self.servicios_nombres[match_idx]
+                    if raw_costo is None:
+                        raw_costo = self.servicios_costos[match_idx]
+                else:
+                    if id_srv not in self.servicios_ids:
+                        raise ValueError(f"El servicio con ID {id_srv} no existe en el catálogo.")
+                    match_idx = self.servicios_ids.index(id_srv)
+                    if not nombre:
+                        nombre = self.servicios_nombres[match_idx]
+                    if raw_costo is None:
+                        raw_costo = self.servicios_costos[match_idx]
+
+                if not self._es_entero_estricto(raw_costo) or raw_costo < 0:
+                    raise ValueError(f"Costo inválido para el servicio '{nombre}'.")
+                costo_u = raw_costo
+            else:
+                raise ValueError("Elemento de servicio inválido.")
+
+            if id_srv in vistos:
+                continue
+            vistos.add(id_srv)
+            resueltos.append({
+                "id_servicio": id_srv,
+                "nombre": nombre,
+                "costo_unitario": costo_u,
+                "subtotal": costo_u * dias_final,
+            })
+        return resueltos
+
+    def editar_reserva_por_id(
+        self,
+        id_reserva,
+        nuevo_habitacion_idx=None,
+        nuevo_dia_inicio=None,
+        nuevos_dias_estadia=None,
+        nuevos_servicios=None,
+    ):
+        """
+        Edita una reserva 'Confirmada' por su ID (dia_inicio 0-based).
+        Libera temporalmente los días originales en la matriz de disponibilidad, valida
+        el nuevo rango en memoria y BD (excluyendo id_reserva), persiste en BD y actualiza
+        la reserva en memoria. Ante cualquier falla o excepción, restaura los días originales.
+        """
+        if not self._es_entero_estricto(id_reserva) or id_reserva < 1:
+            return False, "Identificador de reserva inválido."
+
+        r = next(
+            (res for res in self.reservas if res.id_reserva == id_reserva and res.estado == "Confirmada"),
+            None,
+        )
+        if r is None:
+            return False, "Reserva activa no encontrada."
+
+        old_hab_idx = r.habitacion_idx
+        old_dia_inicio = r.dia_inicio
+        old_dias = r.dias_estadia
+
+        if (
+            not (0 <= old_hab_idx < len(self.matriz_disponibilidad))
+            or old_dia_inicio < 0
+            or old_dias < 1
+            or old_dia_inicio + old_dias > self.dias_mes
+        ):
+            return False, "Estado actual de la reserva fuera de los límites del calendario."
+
+        if nuevo_habitacion_idx is not None and not self._es_entero_estricto(nuevo_habitacion_idx):
+            return False, "Índice de alojamiento inválido."
+        if nuevo_dia_inicio is not None and not self._es_entero_estricto(nuevo_dia_inicio):
+            return False, "Día de ingreso inválido."
+        if nuevos_dias_estadia is not None and not self._es_entero_estricto(nuevos_dias_estadia):
+            return False, "Cantidad de noches inválida."
+        if nuevos_servicios is not None and not isinstance(nuevos_servicios, (list, tuple)):
+            return False, "El listado de servicios debe ser una lista o tupla."
+
+        hab_idx_final = r.habitacion_idx if nuevo_habitacion_idx is None else nuevo_habitacion_idx
+        dia_inicio_final = r.dia_inicio if nuevo_dia_inicio is None else nuevo_dia_inicio
+        dias_final = r.dias_estadia if nuevos_dias_estadia is None else nuevos_dias_estadia
+
+        if not (0 <= hab_idx_final < len(self.ids_habitaciones)):
+            return False, "El alojamiento seleccionado no existe o está fuera de rango."
+        if dia_inicio_final < 0 or dias_final < 1 or dia_inicio_final + dias_final > self.dias_mes:
+            return False, "Las fechas seleccionadas exceden los límites del calendario."
+
+        self.sincronizar_servicios()
+
+        # Liberar temporalmente los días anteriores en la matriz en memoria
+        for d in range(old_dia_inicio, old_dia_inicio + old_dias):
+            self.matriz_disponibilidad[old_hab_idx][d] = 0
+
+        confirmado = False
+        try:
+            # 1. Validar disponibilidad en la matriz en memoria
+            for d in range(dia_inicio_final, dia_inicio_final + dias_final):
+                if self.matriz_disponibilidad[hab_idx_final][d] != 0:
+                    return False, "El alojamiento no está disponible en las fechas seleccionadas."
+
+            # 2. Validar disponibilidad en BD (1-based, excluyendo la propia reserva)
+            id_hab_nuevo = self.ids_habitaciones[hab_idx_final]
+            if not self.db.verificar_disponibilidad_db(
+                id_hab_nuevo,
+                dia_inicio_final + 1,
+                dias_final,
+                excluir_id_reserva=r.id_reserva,
+            ):
+                return False, "El alojamiento no está disponible en MySQL para las fechas seleccionadas."
+
+            # 3. Resolver snapshots de alojamiento y tarifa base
+            if hab_idx_final != old_hab_idx:
+                hab_nombre_final = self.habitaciones[hab_idx_final]
+                tipo_aloj_final = self.tipos_habitaciones[hab_idx_final]
+                tarifa_base_final = self.tarifas[hab_idx_final]
+            else:
+                hab_nombre_final = r.habitacion_nombre or self.habitaciones[hab_idx_final]
+                tipo_aloj_final = r.tipo_alojamiento or self.tipos_habitaciones[hab_idx_final]
+                tarifa_base_final = (
+                    r.tarifa_base_snapshot
+                    if r.tarifa_base_snapshot is not None
+                    else self.tarifas[hab_idx_final]
+                )
+
+            # 4. Resolver servicios contratados y recalcular monto total
+            if nuevos_servicios is None:
+                if r.servicios:
+                    servicios_base = r.servicios
+                elif r.incluye_desayuno or r.incluye_estacionamiento:
+                    servicios_base = self._sintetizar_servicios_legacy(r)
+                else:
+                    servicios_base = []
+            else:
+                servicios_base = nuevos_servicios
+
+            servicios_final = self._normalizar_servicios_edicion(servicios_base, dias_final)
+            costo_servicios_noche = sum(s["costo_unitario"] for s in servicios_final)
+            nuevo_total = (tarifa_base_final + costo_servicios_noche) * dias_final
+
+            # 5. Persistir transaccionalmente en MySQL (dia_inicio_bd es 1-based)
+            exito, msg = self.db.editar_reserva_transaccional(
+                r.id_reserva,
+                id_hab_nuevo,
+                dia_inicio_final + 1,
+                dias_final,
+                nuevo_total,
+                servicios_final,
+                habitacion_nombre=hab_nombre_final,
+                tipo_alojamiento=tipo_aloj_final,
+                tarifa_base_snapshot=tarifa_base_final,
+            )
+            if not exito:
+                return False, msg
+
+            # 6. Marcar nuevos días en la matriz y actualizar Reserva en memoria
+            for d in range(dia_inicio_final, dia_inicio_final + dias_final):
+                self.matriz_disponibilidad[hab_idx_final][d] = 1
+            confirmado = True
+
+            r.habitacion_idx = hab_idx_final
+            r.dia_inicio = dia_inicio_final
+            r.dias_estadia = dias_final
+            r.total = nuevo_total
+            r.habitacion_nombre = hab_nombre_final
+            r.tipo_alojamiento = tipo_aloj_final
+            r.tarifa_base_snapshot = tarifa_base_final
+            r.servicios = [dict(s) for s in servicios_final]
+            nombres_lower = [s["nombre"].strip().lower() for s in r.servicios]
+            r.incluye_desayuno = any("desayuno" in n for n in nombres_lower)
+            r.incluye_estacionamiento = any("estacionamiento" in n for n in nombres_lower)
+            return True, msg
+        except Exception as e:
+            return False, f"Error al editar reserva: {e}"
+        finally:
+            if not confirmado:
+                for d in range(old_dia_inicio, old_dia_inicio + old_dias):
+                    self.matriz_disponibilidad[old_hab_idx][d] = 1
+
+    def editar_reserva(self):
+        """Flujo interactivo de consola para editar una reserva activa."""
+        print("\n--- EDITAR RESERVA ACTIVA ---")
+        self.cargar_datos()
+        activas = [
+            r for r in self.reservas if r.estado == "Confirmada" and r.id_reserva is not None
+        ]
+        if not activas:
+            print("No hay reservas activas para editar.")
+            return
+
+        for idx, r in enumerate(activas, start=1):
+            hab_num = (
+                r.habitacion_nombre
+                if r.habitacion_nombre is not None
+                else (
+                    self.habitaciones[r.habitacion_idx]
+                    if 0 <= r.habitacion_idx < len(self.habitaciones)
+                    else f"ID#{r.habitacion_idx}"
+                )
+            )
+            texto_srv = self._formatear_servicios_reserva(r)
+            print(
+                f"{idx}. [ID #{r.id_reserva}] {r.huesped.nombre} ({r.huesped.rut}) | "
+                f"Alojamiento: {hab_num} | Día {r.dia_inicio + 1} ({r.dias_estadia} noches) | "
+                f"Servicios: {texto_srv} | Total: ${r.total:,}"
+            )
+
+        seleccion = self._leer_entero(
+            f"Seleccione la reserva a editar (1-{len(activas)}, 0 para cancelar): ",
+            minimo=0,
+            maximo=len(activas),
+        )
+        if seleccion is None or seleccion == 0:
+            return
+
+        r = activas[seleccion - 1]
+        hab_actual = (
+            r.habitacion_nombre
+            if r.habitacion_nombre is not None
+            else (
+                self.habitaciones[r.habitacion_idx]
+                if 0 <= r.habitacion_idx < len(self.habitaciones)
+                else ""
+            )
+        )
+        nuevo_hab_txt = self._leer_texto(
+            f"Nuevo alojamiento [{hab_actual}] (Enter para mantener): ",
+            permitir_vacio=True,
+            max_len=50,
+        )
+        if nuevo_hab_txt is None:
+            return
+        if not nuevo_hab_txt:
+            nuevo_hab_idx = r.habitacion_idx
+        else:
+            nuevo_hab_idx = self._buscar_indice_alojamiento(nuevo_hab_txt)
+            if nuevo_hab_idx is None:
+                print("Error: Habitación o cabaña no existe.")
+                return
+
+        nuevo_dia_ui = self._leer_entero(
+            f"Nuevo día de ingreso (1-{self.dias_mes}) [{r.dia_inicio + 1}] (Enter para mantener): ",
+            minimo=1,
+            maximo=self.dias_mes,
+            default=r.dia_inicio + 1,
+        )
+        if nuevo_dia_ui is None:
+            return
+        nuevo_dia_inicio = nuevo_dia_ui - 1
+
+        nuevos_dias = self._leer_entero(
+            f"Nueva cantidad de noches [{r.dias_estadia}] (Enter para mantener): ",
+            minimo=1,
+            maximo=self.dias_mes,
+            default=r.dias_estadia,
+        )
+        if nuevos_dias is None:
+            return
+
+        if nuevo_dia_inicio + nuevos_dias > self.dias_mes:
+            print("Error: Las fechas seleccionadas exceden el calendario actual.")
+            return
+
+        modificar_srv = self._leer_si_no("¿Desea modificar los servicios adicionales? (s/n): ")
+        if modificar_srv is None:
+            return
+
+        if not modificar_srv:
+            nuevos_servicios = None
+            servicios_preview = (
+                r.servicios
+                if r.servicios
+                else (
+                    self._sintetizar_servicios_legacy(r)
+                    if (r.incluye_desayuno or r.incluye_estacionamiento)
+                    else []
+                )
+            )
+            servicios_preview = self._normalizar_servicios_edicion(servicios_preview, nuevos_dias)
+        else:
+            servicios_actuales = (
+                r.servicios
+                if r.servicios
+                else (
+                    self._sintetizar_servicios_legacy(r)
+                    if (r.incluye_desayuno or r.incluye_estacionamiento)
+                    else []
+                )
+            )
+            actuales_por_id = {
+                s["id_servicio"]: s for s in servicios_actuales if s.get("id_servicio") is not None
+            }
+            nuevos_servicios = []
+            ids_disponibles_mostrados = set()
+
+            for i in range(len(self.servicios_ids)):
+                if not self.servicios_disponibles[i]:
+                    continue
+                id_srv = self.servicios_ids[i]
+                nombre_srv = self.servicios_nombres[i]
+                costo_srv = (
+                    actuales_por_id[id_srv]["costo_unitario"]
+                    if id_srv in actuales_por_id
+                    else self.servicios_costos[i]
+                )
+                ids_disponibles_mostrados.add(id_srv)
+                resp = self._leer_si_no(
+                    f"¿Incluir {nombre_srv} (${costo_srv:,}/noche)? (s/n): "
+                )
+                if resp is None:
+                    return
+                if resp:
+                    nuevos_servicios.append({
+                        "id_servicio": id_srv,
+                        "nombre": nombre_srv,
+                        "costo_unitario": costo_srv,
+                        "subtotal": costo_srv * nuevos_dias,
+                    })
+
+            for id_srv, srv_old in actuales_por_id.items():
+                if id_srv not in ids_disponibles_mostrados:
+                    resp = self._leer_si_no(
+                        f"¿Mantener servicio contratado '{srv_old['nombre']}' "
+                        f"(${srv_old['costo_unitario']:,}/noche - deshabilitado en catálogo)? (s/n): "
+                    )
+                    if resp is None:
+                        return
+                    if resp:
+                        nuevos_servicios.append({
+                            "id_servicio": id_srv,
+                            "nombre": srv_old["nombre"],
+                            "costo_unitario": srv_old["costo_unitario"],
+                            "subtotal": srv_old["costo_unitario"] * nuevos_dias,
+                        })
+            servicios_preview = nuevos_servicios
+
+        tarifa_base_preview = (
+            self.tarifas[nuevo_hab_idx]
+            if nuevo_hab_idx != r.habitacion_idx
+            else (
+                r.tarifa_base_snapshot
+                if r.tarifa_base_snapshot is not None
+                else self.tarifas[nuevo_hab_idx]
+            )
+        )
+        costo_srv_preview = sum(s["costo_unitario"] for s in servicios_preview)
+        total_preview = (tarifa_base_preview + costo_srv_preview) * nuevos_dias
+
+        print("\n--- RESUMEN DE EDICIÓN ---")
+        print(
+            f"Alojamiento: {self.tipos_habitaciones[nuevo_hab_idx]} {self.habitaciones[nuevo_hab_idx]} "
+            f"(${tarifa_base_preview:,}/noche)"
+        )
+        print(f"Ingreso: Día {nuevo_dia_ui} | Noches: {nuevos_dias}")
+        nombres_preview = ", ".join(s["nombre"] for s in servicios_preview) if servicios_preview else "Ninguno"
+        print(f"Servicios: {nombres_preview}")
+        print(f"Nuevo Total: ${total_preview:,}")
+
+        confirmar = self._leer_si_no("\n¿Confirmar cambios en la reserva? (s/n): ")
+        if confirmar is True:
+            exito, msg = self.editar_reserva_por_id(
+                r.id_reserva,
+                nuevo_habitacion_idx=nuevo_hab_idx,
+                nuevo_dia_inicio=nuevo_dia_inicio,
+                nuevos_dias_estadia=nuevos_dias,
+                nuevos_servicios=nuevos_servicios,
+            )
+            print(msg if exito else f"Error: {msg}")
+        else:
+            print("Edición cancelada.")
+
+    def cancelar_reserva_por_id(self, id_reserva):
+        """
+        Cancela lógicamente una reserva 'Confirmada' en MySQL (estado='Cancelada'),
+        libera sus días en matriz_disponibilidad y la retira de la lista de activas.
+        """
+        if not self._es_entero_estricto(id_reserva) or id_reserva < 1:
+            return False, "Identificador de reserva inválido."
+
+        r = next(
+            (res for res in self.reservas if res.id_reserva == id_reserva and res.estado == "Confirmada"),
+            None,
+        )
+        if r is None:
+            return False, "Reserva activa no encontrada."
+
+        try:
+            exito, msg = self.db.cancelar_reserva_transaccional(r.id_reserva)
+        except Exception as e:
+            return False, f"Error al cancelar reserva: {e}"
+
+        if not exito:
+            return False, msg
+
+        if 0 <= r.habitacion_idx < len(self.matriz_disponibilidad):
+            for d in range(r.dia_inicio, r.dia_inicio + r.dias_estadia):
+                if 0 <= d < self.dias_mes:
+                    self.matriz_disponibilidad[r.habitacion_idx][d] = 0
+
+        r.estado = "Cancelada"
+        self.reservas = [res for res in self.reservas if res is not r]
+        return True, msg
+
+    def cancelar_reserva(self):
+        """Flujo interactivo de consola para cancelar lógicamente una reserva activa."""
+        print("\n--- CANCELAR RESERVA ACTIVA ---")
+        self.cargar_datos()
+        activas = [
+            r for r in self.reservas if r.estado == "Confirmada" and r.id_reserva is not None
+        ]
+        if not activas:
+            print("No hay reservas activas para cancelar.")
+            return
+
+        for idx, r in enumerate(activas, start=1):
+            hab_num = (
+                r.habitacion_nombre
+                if r.habitacion_nombre is not None
+                else (
+                    self.habitaciones[r.habitacion_idx]
+                    if 0 <= r.habitacion_idx < len(self.habitaciones)
+                    else f"ID#{r.habitacion_idx}"
+                )
+            )
+            print(
+                f"{idx}. [ID #{r.id_reserva}] {r.huesped.nombre} ({r.huesped.rut}) | "
+                f"Alojamiento: {hab_num} | Día {r.dia_inicio + 1} ({r.dias_estadia} noches) | "
+                f"Total: ${r.total:,}"
+            )
+
+        seleccion = self._leer_entero(
+            f"Seleccione la reserva a cancelar (1-{len(activas)}, 0 para volver): ",
+            minimo=0,
+            maximo=len(activas),
+        )
+        if seleccion is None or seleccion == 0:
+            return
+
+        r = activas[seleccion - 1]
+        confirmar = self._leer_si_no(
+            f"¿Confirmar cancelación de la reserva #{r.id_reserva} de {r.huesped.nombre}? (s/n): "
+        )
+        if confirmar is True:
+            exito, msg = self.cancelar_reserva_por_id(r.id_reserva)
+            print(msg if exito else f"Error: {msg}")
+        else:
+            print("Operación cancelada.")
 
     def _listar_alojamientos(self):
         """Muestra la lista numerada de habitaciones y cabañas registradas."""
@@ -524,11 +1141,24 @@ class NexoPMS:
             print(f"Error: {msg}")
             return
 
-        self.ids_habitaciones.append(nuevo_id)
-        self.tipos_habitaciones.append(tipo)
-        self.habitaciones.append(identificador)
-        self.tarifas.append(tarifa)
-        self.matriz_disponibilidad.append([0 for _ in range(self.dias_mes)])
+        if not self.ids_habitaciones or nuevo_id > max(self.ids_habitaciones):
+            self.ids_habitaciones.append(nuevo_id)
+            self.tipos_habitaciones.append(tipo)
+            self.habitaciones.append(identificador)
+            self.tarifas.append(tarifa)
+            self.matriz_disponibilidad.append([0 for _ in range(self.dias_mes)])
+        else:
+            insert_idx = 0
+            while insert_idx < len(self.ids_habitaciones) and self.ids_habitaciones[insert_idx] < nuevo_id:
+                insert_idx += 1
+            self.ids_habitaciones.insert(insert_idx, nuevo_id)
+            self.tipos_habitaciones.insert(insert_idx, tipo)
+            self.habitaciones.insert(insert_idx, identificador)
+            self.tarifas.insert(insert_idx, tarifa)
+            self.matriz_disponibilidad.insert(insert_idx, [0 for _ in range(self.dias_mes)])
+            for r in self.reservas:
+                if r.habitacion_idx >= insert_idx:
+                    r.habitacion_idx += 1
         print(msg)
 
     def editar_alojamiento(self):
@@ -657,28 +1287,506 @@ class NexoPMS:
         self.matriz_disponibilidad.pop(idx)
 
         for r in self.reservas:
-            if r.habitacion_idx > idx:
+            if r.habitacion_idx == idx:
+                r.habitacion_idx = -1
+            elif r.habitacion_idx > idx:
                 r.habitacion_idx -= 1
 
         print(msg)
 
-    def menu_administracion(self):
-        """Submenú exclusivo para administradores para gestionar habitaciones y cabañas."""
+    def crear_servicio(self, nombre, costo, disponible=True):
+        """Crea un nuevo servicio en el catálogo y resincroniza los vectores paralelos."""
+        if self.usuario_actual is not None and not self._es_admin():
+            return False, None, "Acceso denegado: función exclusiva para administradores."
+        try:
+            exito, nuevo_id, msg = self.db.crear_servicio(nombre, costo, disponible=disponible)
+        except Exception as e:
+            return False, None, f"Error al crear servicio: {e}"
+        if exito:
+            self.sincronizar_servicios()
+        return exito, nuevo_id, msg
+
+    def editar_servicio(self, id_servicio, nombre, costo):
+        """Edita nombre/costo de un servicio en el catálogo y resincroniza los vectores paralelos."""
+        if self.usuario_actual is not None and not self._es_admin():
+            return False, "Acceso denegado: función exclusiva para administradores."
+        try:
+            exito, msg = self.db.editar_servicio(id_servicio, nombre, costo)
+        except Exception as e:
+            return False, f"Error al editar servicio: {e}"
+        if exito:
+            self.sincronizar_servicios()
+        return exito, msg
+
+    def cambiar_disponibilidad_servicio(self, id_servicio, disponible=None):
+        """Habilita o deshabilita un servicio y resincroniza los vectores paralelos."""
+        if self.usuario_actual is not None and not self._es_admin():
+            return False, None, "Acceso denegado: función exclusiva para administradores."
+        try:
+            exito, nuevo_estado, msg = self.db.cambiar_disponibilidad_servicio(
+                id_servicio, disponible=disponible
+            )
+        except Exception as e:
+            return False, None, f"Error al cambiar disponibilidad del servicio: {e}"
+        if exito:
+            self.sincronizar_servicios()
+        return exito, nuevo_estado, msg
+
+    def listar_servicios(self):
+        """Muestra el catálogo completo de servicios adicionales con su estado."""
+        self.sincronizar_servicios()
+        print("\n--- CATÁLOGO DE SERVICIOS ADICIONALES ---")
+        if not self.servicios_ids:
+            print("No hay servicios registrados.")
+            return
+        for idx, (id_srv, nombre, costo, disp) in enumerate(
+            zip(
+                self.servicios_ids,
+                self.servicios_nombres,
+                self.servicios_costos,
+                self.servicios_disponibles,
+            ),
+            start=1,
+        ):
+            estado = "Habilitado" if disp else "Deshabilitado"
+            print(f"{idx}. [#{id_srv}] {nombre} — ${costo:,} / noche [{estado}]")
+
+    def agregar_servicio_cli(self):
+        """Flujo interactivo para crear un nuevo servicio adicional (solo admin)."""
         if not self._es_admin():
             print("Acceso denegado: función exclusiva para administradores.")
             return
 
+        print("\n--- AGREGAR SERVICIO ADICIONAL ---")
+        nombre = self._leer_texto("Nombre del servicio: ", max_len=100)
+        if nombre is None:
+            return
+        costo = self._leer_entero("Costo por noche ($): ", minimo=1, maximo=4294967295)
+        if costo is None:
+            return
+
+        exito, _, msg = self.crear_servicio(nombre, costo, disponible=True)
+        print(msg if exito else f"Error: {msg}")
+
+    def editar_servicio_cli(self):
+        """Flujo interactivo para editar nombre y costo de un servicio (solo admin)."""
+        if not self._es_admin():
+            print("Acceso denegado: función exclusiva para administradores.")
+            return
+
+        print("\n--- EDITAR SERVICIO ADICIONAL ---")
+        self.listar_servicios()
+        if not self.servicios_ids:
+            return
+
+        seleccion = self._leer_entero(
+            f"Seleccione el servicio a editar (1-{len(self.servicios_ids)}, 0 para cancelar): ",
+            minimo=0,
+            maximo=len(self.servicios_ids),
+        )
+        if seleccion is None or seleccion == 0:
+            return
+
+        idx = seleccion - 1
+        id_srv = self.servicios_ids[idx]
+        nombre_actual = self.servicios_nombres[idx]
+        costo_actual = self.servicios_costos[idx]
+
+        nuevo_nombre = self._leer_texto(
+            f"Nuevo nombre [{nombre_actual}] (Enter para mantener): ",
+            permitir_vacio=True,
+            max_len=100,
+        )
+        if nuevo_nombre is None:
+            return
+        if not nuevo_nombre:
+            nuevo_nombre = nombre_actual
+
+        nuevo_costo = self._leer_entero(
+            f"Nuevo costo [${costo_actual:,}] (Enter para mantener): ",
+            minimo=1,
+            maximo=4294967295,
+            default=costo_actual,
+        )
+        if nuevo_costo is None:
+            return
+
+        exito, msg = self.editar_servicio(id_srv, nuevo_nombre, nuevo_costo)
+        print(msg if exito else f"Error: {msg}")
+
+    def cambiar_disponibilidad_servicio_cli(self):
+        """Flujo interactivo para habilitar o deshabilitar un servicio (solo admin)."""
+        if not self._es_admin():
+            print("Acceso denegado: función exclusiva para administradores.")
+            return
+
+        print("\n--- HABILITAR / DESHABILITAR SERVICIO ---")
+        self.listar_servicios()
+        if not self.servicios_ids:
+            return
+
+        seleccion = self._leer_entero(
+            f"Seleccione el servicio a habilitar/deshabilitar (1-{len(self.servicios_ids)}, 0 para cancelar): ",
+            minimo=0,
+            maximo=len(self.servicios_ids),
+        )
+        if seleccion is None or seleccion == 0:
+            return
+
+        id_srv = self.servicios_ids[seleccion - 1]
+        exito, _, msg = self.cambiar_disponibilidad_servicio(id_srv)
+        print(msg if exito else f"Error: {msg}")
+
+    def _obtener_historial_reservas(self):
+        """Obtiene todas las reservas históricas desde la BD (con fallback a reservas en memoria)."""
+        if hasattr(self.db, "obtener_todas_las_reservas"):
+            try:
+                filas = self.db.obtener_todas_las_reservas()
+                if isinstance(filas, list):
+                    return filas
+            except Exception as e:
+                print(f"Aviso al consultar historial de reservas: {e}")
+        return [
+            {
+                "id_reserva": r.id_reserva,
+                "monto_total": r.total,
+                "estado": r.estado,
+                "dias_estadia": r.dias_estadia,
+                "incluye_desayuno": 1 if r.incluye_desayuno else 0,
+                "incluye_estacionamiento": 1 if r.incluye_estacionamiento else 0,
+                "servicios": [dict(s) for s in r.servicios],
+            }
+            for r in self.reservas
+        ]
+
+    def reporte_resumen_reservas(self):
+        """
+        1. Resumen de Reservas: Total histórico en BD, desglose entre
+        'Confirmada' y 'Cancelada', y tasa de cancelación (%).
+        """
+        if not self._puede_ver_reportes():
+            print("Acceso denegado: función exclusiva para administradores y gerentes.")
+            return None
+
+        todas = self._obtener_historial_reservas()
+        total_historico = len(todas)
+        confirmadas = sum(1 for r in todas if r.get("estado") == "Confirmada")
+        canceladas = sum(1 for r in todas if r.get("estado") == "Cancelada")
+        tasa_cancelacion = (canceladas / total_historico * 100.0) if total_historico > 0 else 0.0
+
+        print("\n--- INFORME 1: RESUMEN DE RESERVAS ---")
+        print(f"Total histórico de reservas : {total_historico}")
+        print(f"Reservas Confirmadas        : {confirmadas}")
+        print(f"Reservas Canceladas         : {canceladas}")
+        print(f"Tasa de cancelación         : {tasa_cancelacion:.2f}%")
+        print("--------------------------------------")
+
+        return {
+            "total_historico": total_historico,
+            "confirmadas": confirmadas,
+            "canceladas": canceladas,
+            "tasa_cancelacion": round(tasa_cancelacion, 2),
+        }
+
+    def reporte_ingresos(self):
+        """
+        2. Informe de Ingresos: Ingresos totales por reservas confirmadas,
+        monto retenido/perdido en canceladas y ticket promedio.
+        """
+        if not self._puede_ver_reportes():
+            print("Acceso denegado: función exclusiva para administradores y gerentes.")
+            return None
+
+        todas = self._obtener_historial_reservas()
+        confirmadas_list = [r for r in todas if r.get("estado") == "Confirmada"]
+        canceladas_list = [r for r in todas if r.get("estado") == "Cancelada"]
+
+        ingresos_confirmados = sum(int(r.get("monto_total", 0)) for r in confirmadas_list)
+        monto_canceladas = sum(int(r.get("monto_total", 0)) for r in canceladas_list)
+        ticket_promedio = (
+            (ingresos_confirmados / len(confirmadas_list))
+            if confirmadas_list
+            else 0.0
+        )
+
+        print("\n--- INFORME 2: INFORME DE INGRESOS ---")
+        print(f"Ingresos totales (Confirmadas)          : ${ingresos_confirmados:,}")
+        print(f"Monto retenido/perdido (Canceladas)     : ${monto_canceladas:,}")
+        print(f"Ticket promedio (Reservas Confirmadas)  : ${ticket_promedio:,.2f}")
+        print("--------------------------------------")
+
+        return {
+            "ingresos_confirmados": ingresos_confirmados,
+            "monto_canceladas": monto_canceladas,
+            "ticket_promedio": round(ticket_promedio, 2),
+        }
+
+    def reporte_ocupacion(self):
+        """
+        3. Informe de Ocupación: Porcentaje de ocupación calculado directamente
+        desde matriz_disponibilidad (general y por habitación/cabaña).
+        """
+        if not self._puede_ver_reportes():
+            print("Acceso denegado: función exclusiva para administradores y gerentes.")
+            return None
+
+        self.cargar_datos()
+        por_alojamiento = []
+        dias_ocupados_total = 0
+        capacidad_total_dias = len(self.habitaciones) * self.dias_mes
+
+        print("\n--- INFORME 3: INFORME DE OCUPACIÓN ---")
+        if not self.habitaciones:
+            print("No hay habitaciones ni cabañas registradas.")
+            porcentaje_general = 0.0
+        else:
+            for i, hab in enumerate(self.habitaciones):
+                tipo = (
+                    self.tipos_habitaciones[i]
+                    if i < len(self.tipos_habitaciones)
+                    else "Habitación"
+                )
+                fila = (
+                    self.matriz_disponibilidad[i]
+                    if i < len(self.matriz_disponibilidad)
+                    else [0] * self.dias_mes
+                )
+                ocupados = sum(1 for celda in fila if celda == 1)
+                dias_ocupados_total += ocupados
+                pct = (ocupados / self.dias_mes * 100.0) if self.dias_mes > 0 else 0.0
+                por_alojamiento.append({
+                    "tipo": tipo,
+                    "identificador": hab,
+                    "dias_ocupados": ocupados,
+                    "dias_totales": self.dias_mes,
+                    "porcentaje_ocupacion": round(pct, 2),
+                })
+                print(
+                    f"- {tipo} {hab:<12}: {ocupados:2d}/{self.dias_mes} días ocupados ({pct:.2f}%)"
+                )
+            porcentaje_general = (
+                (dias_ocupados_total / capacidad_total_dias * 100.0)
+                if capacidad_total_dias > 0
+                else 0.0
+            )
+
+        print("-" * 39)
+        print(
+            f"Ocupación General del Mes: {dias_ocupados_total}/{capacidad_total_dias} días "
+            f"({porcentaje_general:.2f}%)"
+        )
+        print("---------------------------------------")
+
+        return {
+            "porcentaje_general": round(porcentaje_general, 2),
+            "dias_ocupados_total": dias_ocupados_total,
+            "capacidad_total_dias": capacidad_total_dias,
+            "por_alojamiento": por_alojamiento,
+        }
+
+    def reporte_rendimiento_servicios(self):
+        """
+        4. Rendimiento de Servicios: Ranking de servicios adicionales contratados
+        e ingresos generados por cada servicio del catálogo escalable.
+        """
+        if not self._puede_ver_reportes():
+            print("Acceso denegado: función exclusiva para administradores y gerentes.")
+            return None
+
+        self.sincronizar_servicios()
+        todas = self._obtener_historial_reservas()
+
+        estadisticas = {}
+        for id_srv, nombre, costo, disp in zip(
+            self.servicios_ids,
+            self.servicios_nombres,
+            self.servicios_costos,
+            self.servicios_disponibles,
+        ):
+            estadisticas[id_srv] = {
+                "id_servicio": id_srv,
+                "nombre": nombre,
+                "costo_actual": costo,
+                "disponible": disp,
+                "contrataciones": 0,
+                "ingresos": 0,
+            }
+
+        for r in todas:
+            if r.get("estado") != "Confirmada":
+                continue
+            servicios_res = r.get("servicios") or []
+            if servicios_res:
+                for s in servicios_res:
+                    id_srv = s.get("id_servicio")
+                    nombre_srv = str(s.get("nombre") or s.get("nombre_snapshot") or "Servicio")
+                    subtotal = int(
+                        s.get("subtotal")
+                        if s.get("subtotal") is not None
+                        else int(s.get("costo_unitario", 0)) * int(r.get("dias_estadia", 1))
+                    )
+                    if id_srv in estadisticas:
+                        estadisticas[id_srv]["contrataciones"] += 1
+                        estadisticas[id_srv]["ingresos"] += subtotal
+                    else:
+                        match_id = next(
+                            (
+                                k for k, v in estadisticas.items()
+                                if v["nombre"].strip().lower() == nombre_srv.strip().lower()
+                            ),
+                            None,
+                        )
+                        if match_id is not None:
+                            estadisticas[match_id]["contrataciones"] += 1
+                            estadisticas[match_id]["ingresos"] += subtotal
+            else:
+                dias = int(r.get("dias_estadia", 1))
+                if r.get("incluye_desayuno"):
+                    match_des = next(
+                        (k for k, v in estadisticas.items() if "desayuno" in v["nombre"].lower()),
+                        None,
+                    )
+                    if match_des is not None:
+                        estadisticas[match_des]["contrataciones"] += 1
+                        estadisticas[match_des]["ingresos"] += estadisticas[match_des]["costo_actual"] * dias
+                if r.get("incluye_estacionamiento"):
+                    match_est = next(
+                        (k for k, v in estadisticas.items() if "estacionamiento" in v["nombre"].lower()),
+                        None,
+                    )
+                    if match_est is not None:
+                        estadisticas[match_est]["contrataciones"] += 1
+                        estadisticas[match_est]["ingresos"] += estadisticas[match_est]["costo_actual"] * dias
+
+        ranking = sorted(
+            estadisticas.values(),
+            key=lambda x: (-x["ingresos"], -x["contrataciones"], x["id_servicio"]),
+        )
+
+        print("\n--- INFORME 4: RENDIMIENTO DE SERVICIOS ADICIONALES ---")
+        if not ranking:
+            print("No hay servicios registrados en el catálogo.")
+        else:
+            for pos, item in enumerate(ranking, start=1):
+                estado_txt = "Activo" if item["disponible"] else "Inactivo"
+                print(
+                    f"#{pos} {item['nombre']:<18} [{estado_txt}] | "
+                    f"Contrataciones: {item['contrataciones']} | "
+                    f"Ingresos generados: ${item['ingresos']:,}"
+                )
+        print("-------------------------------------------------------")
+        return ranking
+
+    def generar_todos_los_reportes(self):
+        """Ejecuta e imprime los 4 informes del módulo de reportería."""
+        if not self._puede_ver_reportes():
+            print("Acceso denegado: función exclusiva para administradores y gerentes.")
+            return None
+        return {
+            "resumen_reservas": self.reporte_resumen_reservas(),
+            "ingresos": self.reporte_ingresos(),
+            "ocupacion": self.reporte_ocupacion(),
+            "rendimiento_servicios": self.reporte_rendimiento_servicios(),
+        }
+
+    def menu_informes_y_reportes(self):
+        """
+        Submenú de Informes y Reportes accesible por Admin y Gerente.
+        Retorna 'CAMBIAR_USUARIO' si el usuario solicita cerrar sesión desde este submenú.
+        """
+        if not self._puede_ver_reportes():
+            print("Acceso denegado: función exclusiva para administradores y gerentes.")
+            return None
+
         while True:
-            print("\n--- MÓDULO DE ADMINISTRACIÓN (HABITACIONES / CABAÑAS) ---")
+            print("\n--- MÓDULO DE INFORMES Y REPORTES ---")
+            print("1. Resumen de Reservas (Histórico, Confirmadas, Canceladas y Tasa %)")
+            print("2. Informe de Ingresos (Confirmados, Perdidos en Canceladas y Ticket Promedio)")
+            print("3. Informe de Ocupación (General y por Habitación / Cabaña)")
+            print("4. Rendimiento de Servicios Adicionales (Ranking e Ingresos)")
+            print("5. Ver todos los informes completos")
+            print("6. Cerrar sesión / Cambiar de usuario")
+            print("7. Volver al menú principal")
+
+            raw = self._leer_entrada("Seleccione una opción: ")
+            if raw is None:
+                return None
+            opcion = raw.strip()
+
+            if opcion == "1":
+                self.reporte_resumen_reservas()
+            elif opcion == "2":
+                self.reporte_ingresos()
+            elif opcion == "3":
+                self.reporte_ocupacion()
+            elif opcion == "4":
+                self.reporte_rendimiento_servicios()
+            elif opcion == "5":
+                self.generar_todos_los_reportes()
+            elif opcion == "6":
+                return "CAMBIAR_USUARIO"
+            elif opcion == "7":
+                return None
+            else:
+                print("Opción inválida. Intente nuevamente.")
+
+    def menu_administracion_servicios(self):
+        """Submenú exclusivo para administradores para gestionar servicios adicionales y costos."""
+        if not self._es_admin():
+            print("Acceso denegado: función exclusiva para administradores.")
+            return None
+
+        while True:
+            print("\n--- GESTIÓN DE SERVICIOS ADICIONALES Y COSTOS ---")
+            print("1. Listar catálogo de servicios adicionales")
+            print("2. Crear nuevo servicio adicional")
+            print("3. Editar costo o nombre de un servicio")
+            print("4. Habilitar / Deshabilitar disponibilidad de un servicio")
+            print("5. Cerrar sesión / Cambiar de usuario")
+            print("6. Volver")
+
+            raw = self._leer_entrada("Seleccione una opción: ")
+            if raw is None:
+                return None
+            opcion = raw.strip()
+
+            if opcion == "1":
+                self.listar_servicios()
+            elif opcion == "2":
+                self.agregar_servicio_cli()
+            elif opcion == "3":
+                self.editar_servicio_cli()
+            elif opcion == "4":
+                self.cambiar_disponibilidad_servicio_cli()
+            elif opcion == "5":
+                return "CAMBIAR_USUARIO"
+            elif opcion == "6":
+                return None
+            else:
+                print("Opción inválida. Intente nuevamente.")
+
+    def menu_administracion(self):
+        """
+        Submenú exclusivo para administradores para gestionar Habitaciones/Cabañas
+        y el catálogo escalable de Servicios Adicionales + Costos.
+        """
+        if not self._es_admin():
+            print("Acceso denegado: función exclusiva para administradores.")
+            return None
+
+        while True:
+            print("\n--- MÓDULO DE ADMINISTRACIÓN (HABITACIONES / CABAÑAS / SERVICIOS) ---")
             print("1. Listar habitaciones y cabañas")
             print("2. Agregar habitación o cabaña")
             print("3. Editar habitación o cabaña")
             print("4. Eliminar habitación o cabaña")
             print("5. Volver al menú principal")
+            print("6. Gestionar Servicios Adicionales + Costos")
+            print("7. Cerrar sesión / Cambiar de usuario")
 
             raw = self._leer_entrada("Seleccione una opción: ")
             if raw is None:
-                return
+                return None
             opcion = raw.strip()
 
             if opcion == "1":
@@ -691,38 +1799,36 @@ class NexoPMS:
             elif opcion == "4":
                 self.eliminar_alojamiento()
             elif opcion == "5":
-                return
+                return None
+            elif opcion == "6":
+                accion = self.menu_administracion_servicios()
+                if accion == "CAMBIAR_USUARIO":
+                    return "CAMBIAR_USUARIO"
+            elif opcion == "7":
+                return "CAMBIAR_USUARIO"
             else:
                 print("Opción inválida. Intente nuevamente.")
 
-    def iniciar(self):
-        """Menú principal interactivo en consola con control de acceso por rol."""
-        if self.usuario_actual is None:
-            if not self.iniciar_sesion():
-                return
+    def menu_reservas_admin(self):
+        """Submenú jerárquico del Módulo de Reservas para el rol Admin (acceso completo)."""
+        if not self._es_admin():
+            print("Acceso denegado: función exclusiva para administradores.")
+            return None
 
         while True:
-            rol = self.usuario_actual.get("rol", "recepcionista")
-            username = self.usuario_actual.get("username", "")
-
-            print(f"\n=== SISTEMA NEXOPMS (MySQL) === [Usuario: {username} | Rol: {rol}]")
+            print("\n--- MÓDULO DE RESERVAS (ADMIN) ---")
             print("1. Consultar matriz de disponibilidad")
             print("2. Consultar tarifas")
             print("3. Registrar nueva reserva (Cotizar y Confirmar)")
-            print("4. Ver reservas activas")
-
-            if rol == "admin":
-                print("5. Módulo de Administración (Gestionar Habitaciones / Cabañas)")
-                print("6. Cerrar sesión / Cambiar de usuario")
-                print("7. Salir")
-            else:
-                print("5. Cerrar sesión / Cambiar de usuario")
-                print("6. Salir")
+            print("4. Editar reserva activa")
+            print("5. Cancelar / Eliminar reserva (borrado lógico)")
+            print("6. Ver reservas activas")
+            print("7. Cerrar sesión / Cambiar de usuario")
+            print("8. Volver al menú principal")
 
             raw = self._leer_entrada("Seleccione una opción: ")
             if raw is None:
-                print("Cerrando NexoPMS... ¡Hasta pronto!")
-                break
+                return None
             opcion = raw.strip()
 
             if opcion == "1":
@@ -733,19 +1839,184 @@ class NexoPMS:
             elif opcion == "3":
                 self.registrar_reserva()
             elif opcion == "4":
+                self.editar_reserva()
+            elif opcion == "5":
+                self.cancelar_reserva()
+            elif opcion == "6":
                 self.ver_reservas_activas()
-            elif rol == "admin" and opcion == "5":
-                self.menu_administracion()
-            elif (rol == "admin" and opcion == "6") or (rol != "admin" and opcion == "5"):
-                print(f"Cerrando sesión de '{username}'...")
-                self.usuario_actual = None
-                if not self.iniciar_sesion():
-                    break
-            elif (rol == "admin" and opcion == "7") or (rol != "admin" and opcion == "6"):
-                print("Cerrando NexoPMS... ¡Hasta pronto!")
-                break
+            elif opcion == "7":
+                return "CAMBIAR_USUARIO"
+            elif opcion == "8":
+                return None
             else:
                 print("Opción inválida. Intente nuevamente.")
+
+    def menu_gestion_reservas_gerente(self):
+        """Submenú para Gerente: Ver, Editar y Cancelar reservas existentes (sin registrar nuevas)."""
+        if not (self._es_gerente() or self._es_admin()):
+            print("Acceso denegado: función exclusiva para gerentes y administradores.")
+            return None
+
+        while True:
+            print("\n--- GESTIÓN DE RESERVAS EXISTENTES (GERENCIA) ---")
+            print("1. Ver reservas activas")
+            print("2. Editar reserva activa")
+            print("3. Cancelar / Eliminar reserva (borrado lógico)")
+            print("4. Cerrar sesión / Cambiar de usuario")
+            print("5. Volver al menú principal")
+
+            raw = self._leer_entrada("Seleccione una opción: ")
+            if raw is None:
+                return None
+            opcion = raw.strip()
+
+            if opcion == "1":
+                self.ver_reservas_activas()
+            elif opcion == "2":
+                self.editar_reserva()
+            elif opcion == "3":
+                self.cancelar_reserva()
+            elif opcion == "4":
+                return "CAMBIAR_USUARIO"
+            elif opcion == "5":
+                return None
+            else:
+                print("Opción inválida. Intente nuevamente.")
+
+    def _cambiar_sesion_interactiva(self):
+        """Cierra la sesión del usuario actual y solicita un nuevo inicio de sesión."""
+        username = self.usuario_actual.get("username", "") if self.usuario_actual else ""
+        print(f"Cerrando sesión de '{username}'...")
+        self.usuario_actual = None
+        return self.iniciar_sesion()
+
+    def iniciar(self):
+        """Menú principal interactivo en consola con control de acceso por rol (RBAC)."""
+        if self.usuario_actual is None:
+            if not self.iniciar_sesion():
+                return
+
+        while True:
+            rol = self.usuario_actual.get("rol", "recepcionista")
+            username = self.usuario_actual.get("username", "")
+
+            print(f"\n=== SISTEMA NEXOPMS (MySQL) === [Usuario: {username} | Rol: {rol}]")
+
+            if rol == "admin":
+                print("1. Consultar matriz de disponibilidad")
+                print("2. Consultar tarifas")
+                print("3. Registrar nueva reserva (Cotizar y Confirmar)")
+                print("4. Ver reservas activas")
+                print("5. Módulo de Administración (Gestionar Habitaciones / Cabañas)")
+                print("6. Cerrar sesión / Cambiar de usuario")
+                print("7. Salir")
+                print("8. Módulo de Reservas (Registrar, Editar, Cancelar, Ver)")
+                print("9. Módulo de Informes y Reportes")
+            elif rol == "gerente":
+                print("1. Consultar habitaciones/cabañas, disponibilidad y tarifas")
+                print("2. Gestionar reservas existentes (Ver, Editar y Cancelar reservas)")
+                print("3. Módulo de Informes y Reportes")
+                print("4. Cerrar sesión / Cambiar de usuario")
+                print("5. Salir")
+            else:
+                # Rol recepcionista
+                print("1. Consultar matriz de disponibilidad")
+                print("2. Consultar tarifas")
+                print("3. Registrar nueva reserva (Cotizar y Confirmar)")
+                print("4. Ver reservas activas")
+                print("5. Cerrar sesión / Cambiar de usuario")
+                print("6. Salir")
+                print("7. Editar reserva activa")
+                print("8. Cancelar / Eliminar reserva (borrado lógico)")
+
+            raw = self._leer_entrada("Seleccione una opción: ")
+            if raw is None:
+                print("Cerrando NexoPMS... ¡Hasta pronto!")
+                break
+            opcion = raw.strip()
+
+            if rol == "admin":
+                if opcion == "1":
+                    self.cargar_datos()
+                    self.mostrar_matriz_disponibilidad()
+                elif opcion == "2":
+                    self.consultar_tarifas()
+                elif opcion == "3":
+                    self.registrar_reserva()
+                elif opcion == "4":
+                    self.ver_reservas_activas()
+                elif opcion == "5":
+                    accion = self.menu_administracion()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                elif opcion == "6":
+                    if not self._cambiar_sesion_interactiva():
+                        break
+                elif opcion == "7":
+                    print("Cerrando NexoPMS... ¡Hasta pronto!")
+                    break
+                elif opcion == "8":
+                    accion = self.menu_reservas_admin()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                elif opcion == "9":
+                    accion = self.menu_informes_y_reportes()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                else:
+                    print("Opción inválida. Intente nuevamente.")
+
+            elif rol == "gerente":
+                if opcion == "1":
+                    self.cargar_datos()
+                    self._listar_alojamientos()
+                    self.mostrar_matriz_disponibilidad()
+                    self.consultar_tarifas()
+                elif opcion == "2":
+                    accion = self.menu_gestion_reservas_gerente()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                elif opcion == "3":
+                    accion = self.menu_informes_y_reportes()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                elif opcion == "4":
+                    if not self._cambiar_sesion_interactiva():
+                        break
+                elif opcion == "5":
+                    print("Cerrando NexoPMS... ¡Hasta pronto!")
+                    break
+                else:
+                    print("Opción inválida. Intente nuevamente.")
+
+            else:
+                # Rol recepcionista
+                if opcion == "1":
+                    self.cargar_datos()
+                    self.mostrar_matriz_disponibilidad()
+                elif opcion == "2":
+                    self.consultar_tarifas()
+                elif opcion == "3":
+                    self.registrar_reserva()
+                elif opcion == "4":
+                    self.ver_reservas_activas()
+                elif opcion == "5":
+                    if not self._cambiar_sesion_interactiva():
+                        break
+                elif opcion == "6":
+                    print("Cerrando NexoPMS... ¡Hasta pronto!")
+                    break
+                elif opcion == "7":
+                    self.editar_reserva()
+                elif opcion == "8":
+                    self.cancelar_reserva()
+                else:
+                    print("Opción inválida. Intente nuevamente.")
 
 
 if __name__ == "__main__":

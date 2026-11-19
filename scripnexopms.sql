@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
     id_usuario INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) NOT NULL UNIQUE,
     password VARCHAR(255) NOT NULL,
-    rol ENUM('admin', 'recepcionista') NOT NULL,
+    rol ENUM('admin', 'gerente', 'recepcionista') NOT NULL,
     activo TINYINT(1) NOT NULL DEFAULT 1,
     fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = InnoDB;
@@ -18,6 +18,12 @@ VALUES (
         'admin',
         'pbkdf2_sha256$100000$d76f3951aa0aa635d61a42fcdb4f00cd$eb697afe724326af0437de2dc86852017552ce955df8b31b728b6bec428285f1',
         'admin',
+        1
+    ),
+    (
+        'gerente',
+        'pbkdf2_sha256$100000$a53c3edb2669347d91524bb1ada4b18b$bf932a312a0b39a041b0def3555777f7baad40f517326935c97b2598c35c96e6',
+        'gerente',
         1
     ),
     (
@@ -56,6 +62,19 @@ VALUES ('Habitación', '101', 45000, 1),
     ('Habitación', '103', 60000, 1),
     ('Habitación', '104', 70000, 1);
 
+CREATE TABLE IF NOT EXISTS servicios (
+    id_servicio INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL UNIQUE,
+    costo INT UNSIGNED NOT NULL,
+    disponible TINYINT(1) NOT NULL DEFAULT 1
+) ENGINE = InnoDB;
+
+-- Poblar servicios adicionales iniciales
+INSERT IGNORE INTO
+    servicios (nombre, costo, disponible)
+VALUES ('Desayuno', 5000, 1),
+    ('Estacionamiento', 8000, 1);
+
 CREATE TABLE IF NOT EXISTS reservas (
     id_reserva INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     id_huesped INT UNSIGNED NOT NULL,
@@ -93,5 +112,17 @@ CREATE TABLE IF NOT EXISTS ocupacion_diaria (
     CONSTRAINT fk_ocupacion_habitacion FOREIGN KEY (id_habitacion) REFERENCES habitaciones (id_habitacion) ON UPDATE CASCADE ON DELETE CASCADE,
     CONSTRAINT fk_ocupacion_reserva FOREIGN KEY (id_reserva) REFERENCES reservas (id_reserva) ON UPDATE CASCADE ON DELETE SET NULL,
     CONSTRAINT chk_dia_mes CHECK (dia_mes BETWEEN 1 AND 30)
+) ENGINE = InnoDB;
+
+CREATE TABLE IF NOT EXISTS reserva_servicios (
+    id_reserva_servicio INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    id_reserva INT UNSIGNED NOT NULL,
+    id_servicio INT UNSIGNED NOT NULL,
+    nombre_snapshot VARCHAR(100) NOT NULL,
+    costo_unitario_snapshot INT UNSIGNED NOT NULL,
+    subtotal INT UNSIGNED NOT NULL,
+    CONSTRAINT uq_reserva_servicio UNIQUE (id_reserva, id_servicio),
+    CONSTRAINT fk_res_serv_reserva FOREIGN KEY (id_reserva) REFERENCES reservas (id_reserva) ON UPDATE CASCADE ON DELETE CASCADE,
+    CONSTRAINT fk_res_serv_servicio FOREIGN KEY (id_servicio) REFERENCES servicios (id_servicio) ON UPDATE CASCADE ON DELETE RESTRICT
 ) ENGINE = InnoDB;
 
