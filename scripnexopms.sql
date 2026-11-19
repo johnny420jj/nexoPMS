@@ -2,7 +2,32 @@ CREATE DATABASE IF NOT EXISTS nexopms_db CHARACTER SET utf8mb4 COLLATE utf8mb4_g
 
 USE nexopms_db;
 
-CREATE TABLE huespedes (
+CREATE TABLE IF NOT EXISTS usuarios (
+    id_usuario INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(50) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    rol ENUM('admin', 'recepcionista') NOT NULL,
+    activo TINYINT(1) NOT NULL DEFAULT 1,
+    fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+-- Usuarios semilla por defecto (contraseñas almacenadas con hash PBKDF2-HMAC-SHA256)
+INSERT IGNORE INTO
+    usuarios (username, password, rol, activo)
+VALUES (
+        'admin',
+        'pbkdf2_sha256$100000$d76f3951aa0aa635d61a42fcdb4f00cd$eb697afe724326af0437de2dc86852017552ce955df8b31b728b6bec428285f1',
+        'admin',
+        1
+    ),
+    (
+        'recepcion',
+        'pbkdf2_sha256$100000$552258e3ee908896bce7018cec99ebf7$43e6590424acd03bca3b50013497f16a379dc00f7ae29fde4f72f15e13fcb808',
+        'recepcionista',
+        1
+    );
+
+CREATE TABLE IF NOT EXISTS huespedes (
     id_huesped INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     rut VARCHAR(12) NOT NULL UNIQUE,
     nombre VARCHAR(100) NOT NULL,
@@ -10,26 +35,28 @@ CREATE TABLE huespedes (
     fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE = InnoDB;
 
-CREATE TABLE habitaciones (
+CREATE TABLE IF NOT EXISTS habitaciones (
     id_habitacion INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    numero_habitacion VARCHAR(10) NOT NULL UNIQUE,
+    tipo ENUM('Habitación', 'Cabaña') NOT NULL DEFAULT 'Habitación',
+    numero_habitacion VARCHAR(50) NOT NULL UNIQUE,
     tarifa_base_noche INT UNSIGNED NOT NULL,
     activa TINYINT(1) NOT NULL DEFAULT 1
 ) ENGINE = InnoDB;
 
--- Poblar las 4 habitaciones del Hotel Los Arrayanes
-INSERT INTO
+-- Poblar las 4 habitaciones iniciales del Hotel Los Arrayanes
+INSERT IGNORE INTO
     habitaciones (
+        tipo,
         numero_habitacion,
         tarifa_base_noche,
         activa
     )
-VALUES ('101', 45000, 1),
-    ('102', 45000, 1),
-    ('103', 60000, 1),
-    ('104', 70000, 1);
+VALUES ('Habitación', '101', 45000, 1),
+    ('Habitación', '102', 45000, 1),
+    ('Habitación', '103', 60000, 1),
+    ('Habitación', '104', 70000, 1);
 
-CREATE TABLE reservas (
+CREATE TABLE IF NOT EXISTS reservas (
     id_reserva INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     id_huesped INT UNSIGNED NOT NULL,
     id_habitacion INT UNSIGNED NOT NULL,
@@ -43,6 +70,9 @@ CREATE TABLE reservas (
         'Cancelada',
         'Finalizada'
     ) NOT NULL DEFAULT 'Confirmada',
+    habitacion_nombre VARCHAR(50) NULL,
+    tipo_alojamiento VARCHAR(20) NULL,
+    tarifa_base_snapshot INT UNSIGNED NULL,
     fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_reserva_huesped FOREIGN KEY (id_huesped) REFERENCES huespedes (id_huesped) ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT fk_reserva_habitacion FOREIGN KEY (id_habitacion) REFERENCES habitaciones (id_habitacion) ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -53,7 +83,7 @@ CREATE TABLE reservas (
     )
 ) ENGINE = InnoDB;
 
-CREATE TABLE ocupacion_diaria (
+CREATE TABLE IF NOT EXISTS ocupacion_diaria (
     id_ocupacion INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     id_habitacion INT UNSIGNED NOT NULL,
     dia_mes TINYINT UNSIGNED NOT NULL,

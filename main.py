@@ -12,8 +12,11 @@ __all__ = ["Huesped", "Reserva", "ConexionDB", "NexoPMS", "main"]
 
 def main():
     """Inicializa y ejecuta la interfaz del sistema NexoPMS."""
-    sistema = NexoPMS()
-    sistema.iniciar()
+    try:
+        sistema = NexoPMS()
+        sistema.iniciar()
+    except KeyboardInterrupt:
+        print("\nCerrando NexoPMS... ¡Hasta pronto!")
 
 
 if __name__ == "__main__":

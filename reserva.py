@@ -17,7 +17,10 @@ class Reserva:
         total,
         incluye_desayuno=False,
         incluye_estacionamiento=False,
-        estado="Confirmada"
+        estado="Confirmada",
+        habitacion_nombre=None,
+        tipo_alojamiento=None,
+        tarifa_base_snapshot=None
     ):
         self.huesped = huesped
         self.habitacion_idx = habitacion_idx
@@ -27,6 +30,9 @@ class Reserva:
         self.incluye_desayuno = bool(incluye_desayuno)
         self.incluye_estacionamiento = bool(incluye_estacionamiento)
         self.estado = estado
+        self.habitacion_nombre = habitacion_nombre
+        self.tipo_alojamiento = tipo_alojamiento
+        self.tarifa_base_snapshot = tarifa_base_snapshot
 
     def to_dict(self):
         """Convierte los atributos de la reserva a un diccionario para serialización JSON."""
@@ -38,5 +44,8 @@ class Reserva:
             "total": self.total,
             "incluye_desayuno": self.incluye_desayuno,
             "incluye_estacionamiento": self.incluye_estacionamiento,
-            "estado": self.estado
+            "estado": self.estado,
+            "habitacion_nombre": self.habitacion_nombre,
+            "tipo_alojamiento": self.tipo_alojamiento,
+            "tarifa_base_snapshot": self.tarifa_base_snapshot
         }

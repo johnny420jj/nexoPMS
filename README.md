@@ -76,3 +76,4 @@ Para validar que todos los módulos y reglas de negocio funcionen correctamente 
 ```bash
 python -m unittest test_smoke.py -v
 ```
+
