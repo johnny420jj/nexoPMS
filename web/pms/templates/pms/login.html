@@ -1,0 +1,32 @@
+{% extends "pms/base.html" %}
+{% block title %}Iniciar Sesión — NexoPMS{% endblock %}
+
+{% block content %}
+<div style="max-width: 420px; margin: 4rem auto;">
+  <div class="card">
+    <h2 style="text-align:center; margin-bottom:0.25rem;">Nexo<span style="color:var(--accent);">PMS</span></h2>
+    <p class="muted" style="text-align:center; margin-top:0;">Hotel Los Arrayanes · Acceso Web</p>
+
+    <form method="post" action="{% url 'login' %}">
+      {% csrf_token %}
+      <div class="form-row">
+        <label for="username">Usuario</label>
+        <input id="username" name="username" type="text" required autofocus placeholder="ej. admin, gerente o recepcion" />
+      </div>
+      <div class="form-row">
+        <label for="password">Contraseña</label>
+        <input id="password" name="password" type="password" required placeholder="••••••••" />
+      </div>
+      <button type="submit" class="btn" style="width:100%;">Ingresar</button>
+    </form>
+
+    <hr style="border:0; border-top:1px solid var(--border); margin:1.25rem 0;" />
+    <p class="muted" style="font-size:0.82rem; margin:0;">
+      <strong>Cuentas de prueba (MySQL):</strong><br />
+      Admin: <code>admin</code> / <code>admin123</code><br />
+      Gerente: <code>gerente</code> / <code>gerente123</code><br />
+      Recepción: <code>recepcion</code> / <code>recep123</code>
+    </p>
+  </div>
+</div>
+{% endblock %}

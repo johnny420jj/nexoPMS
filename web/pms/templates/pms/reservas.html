@@ -1,0 +1,178 @@
+{% extends "pms/base.html" %}
+{% block title %}Reservas — NexoPMS{% endblock %}
+
+{% block content %}
+{% if puede_registrar %}
+<div class="card">
+  <h2>Registrar Nueva Reserva</h2>
+  <form method="post" action="{% url 'registrar_reserva' %}" id="form-reserva">
+    {% csrf_token %}
+    <div class="grid grid-3">
+      <div class="form-row">
+        <label for="habitacion_idx">Habitación / Cabaña</label>
+        <select id="habitacion_idx" name="habitacion_idx" required>
+          {% for a in alojamientos %}
+          <option value="{{ a.idx }}" data-tarifa="{{ a.tarifa }}">
+            [{{ a.tipo }}] {{ a.numero }} — ${{ a.tarifa }}/noche
+          </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="dia_inicio">Día de ingreso (1-{{ dias_mes }})</label>
+        <input id="dia_inicio" name="dia_inicio" type="number" min="1" max="{{ dias_mes }}" value="1" required />
+      </div>
+      <div class="form-row">
+        <label for="dias_estadia">Cantidad de noches</label>
+        <input id="dias_estadia" name="dias_estadia" type="number" min="1" max="{{ dias_mes }}" value="1" required />
+      </div>
+    </div>
+
+    <div class="grid grid-3">
+      <div class="form-row">
+        <label for="rut">RUT del huésped</label>
+        <input id="rut" name="rut" type="text" maxlength="12" required placeholder="12.345.678-9" />
+      </div>
+      <div class="form-row">
+        <label for="nombre">Nombre completo</label>
+        <input id="nombre" name="nombre" type="text" maxlength="100" required placeholder="Nombre del huésped" />
+      </div>
+      <div class="form-row">
+        <label for="telefono">Teléfono</label>
+        <input id="telefono" name="telefono" type="text" maxlength="20" required placeholder="+569..." />
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label>Servicios Adicionales Disponibles (Compuerta Inclusiva OR)</label>
+      <div style="display:flex; flex-wrap:wrap; gap:1rem; padding:0.5rem 0;">
+        {% for s in servicios_disponibles %}
+        <label style="display:flex; align-items:center; gap:0.4rem; color:var(--text); cursor:pointer;">
+          <input type="checkbox" class="srv-check" name="servicios" value="{{ s.id }}" data-costo="{{ s.costo }}" />
+          {{ s.nombre }} (${{ s.costo }}/noche)
+        </label>
+        {% empty %}
+        <span class="muted">No hay servicios adicionales activos en el catálogo.</span>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:1rem;">
+      <div>
+        <span class="muted">Cotización estimada:</span>
+        <strong id="preview-total" style="font-size:1.25rem; color:var(--accent); margin-left:0.5rem;">$0</strong>
+      </div>
+      <button type="submit" class="btn">Confirmar y Guardar Reserva</button>
+    </div>
+  </form>
+</div>
+{% else %}
+<div class="card">
+  <p class="muted" style="margin:0;">
+    Sesión de <strong>Gerencia</strong>: modo supervisión (puedes ver, editar y cancelar reservas activas, pero no registrar nuevas).
+  </p>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Reservas Activas ({{ reservas|length }})</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Huésped</th>
+          <th>Alojamiento</th>
+          <th>Ingreso / Noches</th>
+          <th>Servicios</th>
+          <th>Total</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reservas %}
+        <tr>
+          <td>#{{ r.id_reserva }}</td>
+          <td><strong>{{ r.huesped.nombre }}</strong><br /><span class="muted">{{ r.huesped.rut }} · {{ r.huesped.telefono }}</span></td>
+          <td>{{ r.tipo_alojamiento }} {{ r.habitacion_nombre }}</td>
+          <td>Día {{ r.dia_inicio_ui }} ({{ r.dias_estadia }} noches)</td>
+          <td>{{ r.servicios_texto }}</td>
+          <td><strong>${{ r.total }}</strong></td>
+          <td>
+            <details style="margin-bottom:0.4rem;">
+              <summary>Editar</summary>
+              <form method="post" action="{% url 'editar_reserva' r.id_reserva %}" style="margin-top:0.5rem; min-width:240px;">
+                {% csrf_token %}
+                <div class="form-row">
+                  <label>Alojamiento</label>
+                  <select name="habitacion_idx">
+                    {% for a in alojamientos %}
+                    <option value="{{ a.idx }}" {% if a.idx == r.habitacion_idx %}selected{% endif %}>
+                      [{{ a.tipo }}] {{ a.numero }} (${{ a.tarifa }})
+                    </option>
+                    {% endfor %}
+                  </select>
+                </div>
+                <div class="grid grid-2">
+                  <div class="form-row">
+                    <label>Día ingreso</label>
+                    <input type="number" name="dia_inicio" min="1" max="{{ dias_mes }}" value="{{ r.dia_inicio_ui }}" required />
+                  </div>
+                  <div class="form-row">
+                    <label>Noches</label>
+                    <input type="number" name="dias_estadia" min="1" max="{{ dias_mes }}" value="{{ r.dias_estadia }}" required />
+                  </div>
+                </div>
+                <div class="form-row">
+                  <label>Servicios</label>
+                  {% for s in servicios_disponibles %}
+                  <label style="display:flex; align-items:center; gap:0.35rem; color:var(--text);">
+                    <input type="checkbox" name="servicios" value="{{ s.id }}" {% if s.id in r.servicios_ids %}checked{% endif %} />
+                    {{ s.nombre }} (${{ s.costo }})
+                  </label>
+                  {% endfor %}
+                </div>
+                <button type="submit" class="btn btn-sm">Guardar cambios</button>
+              </form>
+            </details>
+
+            <form method="post" action="{% url 'cancelar_reserva' r.id_reserva %}" onsubmit="return confirm('¿Cancelar reserva #{{ r.id_reserva }}? Se liberará la matriz y conservará el historial.');">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-danger">Cancelar (Soft Delete)</button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="7" class="muted">No hay reservas activas registradas.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function () {
+  const sel = document.getElementById("habitacion_idx");
+  const nochesInput = document.getElementById("dias_estadia");
+  const checks = document.querySelectorAll(".srv-check");
+  const out = document.getElementById("preview-total");
+  if (!sel || !nochesInput || !out) return;
+
+  function recalcular() {
+    const opt = sel.options[sel.selectedIndex];
+    const tarifa = opt ? parseInt(opt.dataset.tarifa || "0", 10) : 0;
+    const noches = Math.max(1, parseInt(nochesInput.value || "1", 10));
+    let extras = 0;
+    checks.forEach((c) => {
+      if (c.checked) extras += parseInt(c.dataset.costo || "0", 10);
+    });
+    const total = (tarifa + extras) * noches;
+    out.textContent = "$" + total.toLocaleString("es-CL");
+  }
+  sel.addEventListener("change", recalcular);
+  nochesInput.addEventListener("input", recalcular);
+  checks.forEach((c) => c.addEventListener("change", recalcular));
+  recalcular();
+})();
+</script>
+{% endblock %}

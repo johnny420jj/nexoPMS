@@ -1,0 +1,74 @@
+{% extends "pms/base.html" %}
+{% block title %}Panel Principal — NexoPMS{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>Panel Principal · Rol: <span class="badge">{{ usuario.rol }}</span></h2>
+  <p class="muted">Conectado en tiempo real a la base de datos MySQL <code>nexopms_db</code> (compartida con la consola).</p>
+
+  <div class="grid grid-3" style="margin-top:1rem;">
+    {% if usuario.rol == 'admin' %}
+    <div class="card" style="margin-bottom:0; background:var(--surface-2);">
+      <h3>1. Módulo Administración</h3>
+      <p class="muted">Gestionar Habitaciones / Cabañas y el catálogo escalable de Servicios Adicionales y costos.</p>
+      <a class="btn" href="{% url 'administracion' %}">Abrir Administración</a>
+    </div>
+    {% endif %}
+
+    {% if usuario.rol == 'admin' or usuario.rol == 'gerente' %}
+    <div class="card" style="margin-bottom:0; background:var(--surface-2);">
+      <h3>{% if usuario.rol == 'admin' %}2. {% endif %}Módulo Gerencia</h3>
+      <p class="muted">Informes de Resumen de Reservas, Ingresos, Ocupación mensual y Ranking de Servicios.</p>
+      <a class="btn" href="{% url 'reportes' %}">Abrir Informes y Reportes</a>
+    </div>
+    {% endif %}
+
+    <div class="card" style="margin-bottom:0; background:var(--surface-2);">
+      <h3>{% if usuario.rol == 'admin' %}3. {% endif %}Módulo Recepción</h3>
+      <p class="muted">
+        {% if usuario.rol == 'gerente' %}
+        Supervisión: ver, editar y cancelar lógicamente reservas activas ({{ total_reservas_activas }} activas).
+        {% else %}
+        Registrar nuevas reservas con servicios dinámicos, editar y cancelar reservas ({{ total_reservas_activas }} activas).
+        {% endif %}
+      </p>
+      <a class="btn" href="{% url 'reservas' %}">Abrir Reservas</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Matriz de Disponibilidad Mensual (30 Días)</h3>
+  <p class="muted">Verde (<code>L</code>) = Libre · Rojo (<code>X</code>) = Ocupada</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Alojamiento</th>
+          <th>Tarifa/Noche</th>
+          {% for d in dias_header %}
+          <th class="matrix-cell">D{{ d }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in alojamientos_matriz %}
+        <tr>
+          <td><strong>{{ a.numero }}</strong> <span class="muted">({{ a.tipo }})</span></td>
+          <td>${{ a.tarifa }}</td>
+          {% for celda in a.fila %}
+            {% if celda == 1 %}
+            <td class="matrix-cell cell-ocupada">X</td>
+            {% else %}
+            <td class="matrix-cell cell-libre">L</td>
+            {% endif %}
+          {% endfor %}
+        </tr>
+        {% empty %}
+        <tr><td colspan="32" class="muted">No hay alojamientos registrados.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

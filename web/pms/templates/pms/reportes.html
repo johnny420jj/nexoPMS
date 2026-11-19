@@ -1,0 +1,113 @@
+{% extends "pms/base.html" %}
+{% block title %}Informes y Reportes — NexoPMS{% endblock %}
+
+{% block content %}
+<div class="card">
+  <h2>1. Resumen de Reservas (Histórico BD)</h2>
+  <div class="grid grid-4">
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Total Histórico</div>
+      <div class="kpi">{{ resumen.total_historico }}</div>
+    </div>
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Confirmadas</div>
+      <div class="kpi" style="color:var(--success);">{{ resumen.confirmadas }}</div>
+    </div>
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Canceladas (Soft Delete)</div>
+      <div class="kpi" style="color:var(--danger);">{{ resumen.canceladas }}</div>
+    </div>
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Tasa de Cancelación</div>
+      <div class="kpi" style="color:var(--warning);">{{ resumen.tasa_cancelacion }}%</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>2. Informe de Ingresos</h2>
+  <div class="grid grid-3">
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Ingresos Confirmados</div>
+      <div class="kpi" style="color:var(--success);">${{ ingresos.ingresos_confirmados }}</div>
+    </div>
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Monto Perdido / Cancelado</div>
+      <div class="kpi" style="color:var(--danger);">${{ ingresos.monto_canceladas }}</div>
+    </div>
+    <div class="card" style="background:var(--surface-2); margin:0;">
+      <div class="muted">Ticket Promedio (Confirmadas)</div>
+      <div class="kpi">${{ ingresos.ticket_promedio }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>3. Informe de Ocupación (Matriz Mensual)</h2>
+  <p class="muted">
+    Ocupación General: <strong>{{ ocupacion.dias_ocupados_total }} / {{ ocupacion.capacidad_total_dias }} días ({{ ocupacion.porcentaje_general }}%)</strong>
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Alojamiento</th>
+          <th>Días Ocupados</th>
+          <th>Ocupación (%)</th>
+          <th style="width:40%;">Progreso</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in ocupacion.por_alojamiento %}
+        <tr>
+          <td><strong>{{ item.identificador }}</strong> <span class="muted">({{ item.tipo }})</span></td>
+          <td>{{ item.dias_ocupados }} / {{ item.dias_totales }}</td>
+          <td>{{ item.porcentaje_ocupacion }}%</td>
+          <td>
+            <div class="bar-bg">
+              <div class="bar-fill" style="width: {{ item.porcentaje_ocupacion }}%;"></div>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>4. Rendimiento de Servicios Adicionales (Ranking)</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Posición</th>
+          <th>Servicio</th>
+          <th>Estado</th>
+          <th>Contrataciones</th>
+          <th>Ingresos Generados</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for srv in servicios_ranking %}
+        <tr>
+          <td>#{{ forloop.counter }}</td>
+          <td><strong>{{ srv.nombre }}</strong></td>
+          <td>
+            {% if srv.disponible %}
+            <span class="badge badge-ok">Activo</span>
+            {% else %}
+            <span class="badge badge-off">Inactivo</span>
+            {% endif %}
+          </td>
+          <td>{{ srv.contrataciones }}</td>
+          <td><strong>${{ srv.ingresos }}</strong></td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="muted">No hay servicios en el catálogo.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

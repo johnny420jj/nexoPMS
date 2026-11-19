@@ -1,0 +1,157 @@
+{% extends "pms/base.html" %}
+{% block title %}Administración — NexoPMS{% endblock %}
+
+{% block content %}
+<div class="grid grid-2">
+  <div class="card">
+    <h2>Agregar Habitación o Cabaña</h2>
+    <form method="post" action="{% url 'agregar_alojamiento' %}">
+      {% csrf_token %}
+      <div class="form-row">
+        <label>Tipo de alojamiento</label>
+        <select name="tipo" required>
+          <option value="Habitación">Habitación</option>
+          <option value="Cabaña">Cabaña</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Identificador / Código</label>
+        <input type="text" name="numero_habitacion" maxlength="50" required placeholder="ej. 105 o Cabaña 1" />
+      </div>
+      <div class="form-row">
+        <label>Tarifa base por noche ($)</label>
+        <input type="number" name="tarifa_base_noche" min="1" required placeholder="65000" />
+      </div>
+      <button type="submit" class="btn">Agregar Alojamiento</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Crear Servicio Adicional</h2>
+    <form method="post" action="{% url 'crear_servicio' %}">
+      {% csrf_token %}
+      <div class="form-row">
+        <label>Nombre del servicio</label>
+        <input type="text" name="nombre" maxlength="100" required placeholder="ej. Spa Termal, Tour Guiado" />
+      </div>
+      <div class="form-row">
+        <label>Costo por noche ($)</label>
+        <input type="number" name="costo" min="1" required placeholder="12000" />
+      </div>
+      <button type="submit" class="btn">Crear Servicio</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Habitaciones y Cabañas Registradas</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Tipo</th>
+          <th>Identificador</th>
+          <th>Tarifa / Noche</th>
+          <th>Días Ocupados</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in alojamientos %}
+        <tr>
+          <td>#{{ a.id }}</td>
+          <td>{{ a.tipo }}</td>
+          <td><strong>{{ a.numero }}</strong></td>
+          <td>${{ a.tarifa }}</td>
+          <td>{{ a.ocupados }} / 30</td>
+          <td>
+            <details style="margin-bottom:0.35rem;">
+              <summary>Editar</summary>
+              <form method="post" action="{% url 'editar_alojamiento' a.id %}" style="margin-top:0.5rem;">
+                {% csrf_token %}
+                <div class="form-row">
+                  <select name="tipo">
+                    <option value="Habitación" {% if a.tipo == 'Habitación' %}selected{% endif %}>Habitación</option>
+                    <option value="Cabaña" {% if a.tipo == 'Cabaña' %}selected{% endif %}>Cabaña</option>
+                  </select>
+                </div>
+                <div class="form-row">
+                  <input type="text" name="numero_habitacion" value="{{ a.numero }}" required />
+                </div>
+                <div class="form-row">
+                  <input type="number" name="tarifa_base_noche" value="{{ a.tarifa }}" min="1" required />
+                </div>
+                <button type="submit" class="btn btn-sm">Guardar</button>
+              </form>
+            </details>
+            <form method="post" action="{% url 'eliminar_alojamiento' a.id %}" onsubmit="return confirm('¿Eliminar {{ a.numero }}?');">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-danger">Eliminar</button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="6" class="muted">No hay alojamientos registrados.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Catálogo Escalable de Servicios Adicionales</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Servicio</th>
+          <th>Costo / Noche</th>
+          <th>Estado</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in servicios %}
+        <tr>
+          <td>#{{ s.id }}</td>
+          <td><strong>{{ s.nombre }}</strong></td>
+          <td>${{ s.costo }}</td>
+          <td>
+            {% if s.disponible %}
+            <span class="badge badge-ok">Habilitado</span>
+            {% else %}
+            <span class="badge badge-off">Deshabilitado</span>
+            {% endif %}
+          </td>
+          <td>
+            <details style="margin-bottom:0.35rem;">
+              <summary>Editar</summary>
+              <form method="post" action="{% url 'editar_servicio' s.id %}" style="margin-top:0.5rem;">
+                {% csrf_token %}
+                <div class="form-row">
+                  <input type="text" name="nombre" value="{{ s.nombre }}" required />
+                </div>
+                <div class="form-row">
+                  <input type="number" name="costo" value="{{ s.costo }}" min="1" required />
+                </div>
+                <button type="submit" class="btn btn-sm">Guardar</button>
+              </form>
+            </details>
+            <form method="post" action="{% url 'toggle_servicio' s.id %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-secondary">
+                {% if s.disponible %}Deshabilitar{% else %}Habilitar{% endif %}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" class="muted">No hay servicios registrados.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
