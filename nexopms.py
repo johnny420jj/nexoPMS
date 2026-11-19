@@ -1767,22 +1767,22 @@ class NexoPMS:
 
     def menu_administracion(self):
         """
-        Submenú exclusivo para administradores para gestionar Habitaciones/Cabañas
-        y el catálogo escalable de Servicios Adicionales + Costos.
+        Submenú exclusivo para administradores: Módulo Administración
+        (Habitaciones/Cabañas y Servicios Adicionales + Costos).
         """
         if not self._es_admin():
             print("Acceso denegado: función exclusiva para administradores.")
             return None
 
         while True:
-            print("\n--- MÓDULO DE ADMINISTRACIÓN (HABITACIONES / CABAÑAS / SERVICIOS) ---")
+            print("\n--- MÓDULO ADMINISTRACIÓN ---")
             print("1. Listar habitaciones y cabañas")
             print("2. Agregar habitación o cabaña")
             print("3. Editar habitación o cabaña")
             print("4. Eliminar habitación o cabaña")
-            print("5. Volver al menú principal")
-            print("6. Gestionar Servicios Adicionales + Costos")
-            print("7. Cerrar sesión / Cambiar de usuario")
+            print("5. Gestionar Servicios Adicionales + Costos")
+            print("6. Cerrar sesión / Cambiar de usuario")
+            print("7. Volver al menú principal")
 
             raw = self._leer_entrada("Seleccione una opción: ")
             if raw is None:
@@ -1799,24 +1799,63 @@ class NexoPMS:
             elif opcion == "4":
                 self.eliminar_alojamiento()
             elif opcion == "5":
-                return None
-            elif opcion == "6":
                 accion = self.menu_administracion_servicios()
                 if accion == "CAMBIAR_USUARIO":
                     return "CAMBIAR_USUARIO"
-            elif opcion == "7":
+            elif opcion == "6":
                 return "CAMBIAR_USUARIO"
+            elif opcion == "7":
+                return None
             else:
                 print("Opción inválida. Intente nuevamente.")
 
-    def menu_reservas_admin(self):
-        """Submenú jerárquico del Módulo de Reservas para el rol Admin (acceso completo)."""
-        if not self._es_admin():
-            print("Acceso denegado: función exclusiva para administradores.")
+    def menu_gerencia(self):
+        """Submenú Módulo Gerencia para el rol Admin (supervisión, reservas existentes y reportes)."""
+        if not (self._es_admin() or self._es_gerente()):
+            print("Acceso denegado: función exclusiva para gerentes y administradores.")
             return None
 
         while True:
-            print("\n--- MÓDULO DE RESERVAS (ADMIN) ---")
+            print("\n--- MÓDULO GERENCIA ---")
+            print("1. Consultar habitaciones/cabañas, disponibilidad y tarifas")
+            print("2. Gestionar reservas existentes (Ver, Editar y Cancelar reservas)")
+            print("3. Módulo de Informes y Reportes")
+            print("4. Cerrar sesión / Cambiar de usuario")
+            print("5. Volver al menú principal")
+
+            raw = self._leer_entrada("Seleccione una opción: ")
+            if raw is None:
+                return None
+            opcion = raw.strip()
+
+            if opcion == "1":
+                self.cargar_datos()
+                self._listar_alojamientos()
+                self.mostrar_matriz_disponibilidad()
+                self.consultar_tarifas()
+            elif opcion == "2":
+                accion = self.menu_gestion_reservas_gerente()
+                if accion == "CAMBIAR_USUARIO":
+                    return "CAMBIAR_USUARIO"
+            elif opcion == "3":
+                accion = self.menu_informes_y_reportes()
+                if accion == "CAMBIAR_USUARIO":
+                    return "CAMBIAR_USUARIO"
+            elif opcion == "4":
+                return "CAMBIAR_USUARIO"
+            elif opcion == "5":
+                return None
+            else:
+                print("Opción inválida. Intente nuevamente.")
+
+    def menu_recepcion(self):
+        """Submenú Módulo Recepción para el rol Admin (operación completa de reservas)."""
+        if not (self._es_admin() or self._es_recepcionista()):
+            print("Acceso denegado: función exclusiva para recepción y administradores.")
+            return None
+
+        while True:
+            print("\n--- MÓDULO RECEPCIÓN ---")
             print("1. Consultar matriz de disponibilidad")
             print("2. Consultar tarifas")
             print("3. Registrar nueva reserva (Cotizar y Confirmar)")
@@ -1903,15 +1942,11 @@ class NexoPMS:
             print(f"\n=== SISTEMA NEXOPMS (MySQL) === [Usuario: {username} | Rol: {rol}]")
 
             if rol == "admin":
-                print("1. Consultar matriz de disponibilidad")
-                print("2. Consultar tarifas")
-                print("3. Registrar nueva reserva (Cotizar y Confirmar)")
-                print("4. Ver reservas activas")
-                print("5. Módulo de Administración (Gestionar Habitaciones / Cabañas)")
-                print("6. Cerrar sesión / Cambiar de usuario")
-                print("7. Salir")
-                print("8. Módulo de Reservas (Registrar, Editar, Cancelar, Ver)")
-                print("9. Módulo de Informes y Reportes")
+                print("1. Módulo Administración")
+                print("2. Módulo Gerencia")
+                print("3. Módulo Recepción")
+                print("4. Cerrar sesión / Cambiar de usuario")
+                print("5. Salir")
             elif rol == "gerente":
                 print("1. Consultar habitaciones/cabañas, disponibilidad y tarifas")
                 print("2. Gestionar reservas existentes (Ver, Editar y Cancelar reservas)")
@@ -1937,35 +1972,26 @@ class NexoPMS:
 
             if rol == "admin":
                 if opcion == "1":
-                    self.cargar_datos()
-                    self.mostrar_matriz_disponibilidad()
-                elif opcion == "2":
-                    self.consultar_tarifas()
-                elif opcion == "3":
-                    self.registrar_reserva()
-                elif opcion == "4":
-                    self.ver_reservas_activas()
-                elif opcion == "5":
                     accion = self.menu_administracion()
                     if accion == "CAMBIAR_USUARIO":
                         if not self._cambiar_sesion_interactiva():
                             break
-                elif opcion == "6":
+                elif opcion == "2":
+                    accion = self.menu_gerencia()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                elif opcion == "3":
+                    accion = self.menu_recepcion()
+                    if accion == "CAMBIAR_USUARIO":
+                        if not self._cambiar_sesion_interactiva():
+                            break
+                elif opcion == "4":
                     if not self._cambiar_sesion_interactiva():
                         break
-                elif opcion == "7":
+                elif opcion == "5":
                     print("Cerrando NexoPMS... ¡Hasta pronto!")
                     break
-                elif opcion == "8":
-                    accion = self.menu_reservas_admin()
-                    if accion == "CAMBIAR_USUARIO":
-                        if not self._cambiar_sesion_interactiva():
-                            break
-                elif opcion == "9":
-                    accion = self.menu_informes_y_reportes()
-                    if accion == "CAMBIAR_USUARIO":
-                        if not self._cambiar_sesion_interactiva():
-                            break
                 else:
                     print("Opción inválida. Intente nuevamente.")
 

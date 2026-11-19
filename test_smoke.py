@@ -829,7 +829,7 @@ class TestNexoPMSSmoke(unittest.TestCase):
         sistema2 = NexoPMS(db=self.fake_db)
         buffer2 = io.StringIO()
         with patch("sys.stdout", buffer2), patch("sys.stdin", io.StringIO(
-            "admin\nmal\nadmin\nadmin123\n7\n"
+            "admin\nmal\nadmin\nadmin123\n5\n"
         )):
             sistema2.iniciar()
         output2 = buffer2.getvalue()
@@ -844,13 +844,13 @@ class TestNexoPMSSmoke(unittest.TestCase):
 
         sistema = NexoPMS(db=self.fake_db)
         # Inicia como recepcionista, intenta opción 9 (inválida para recepcionista),
-        # luego elige 5 (Cerrar sesión / Cambiar de usuario), inicia como admin, ve Admin y sale con 7.
+        # luego elige 5 (Cerrar sesión / Cambiar de usuario), inicia como admin, ve los 3 módulos y sale con 5.
         script = (
             "recepcion\nrecep123\n"
             "9\n"
             "5\n"
             "admin\nadmin123\n"
-            "7\n"
+            "5\n"
         )
         buffer = io.StringIO()
         with patch("sys.stdout", buffer), patch("sys.stdin", io.StringIO(script)):
@@ -858,9 +858,11 @@ class TestNexoPMSSmoke(unittest.TestCase):
         output = buffer.getvalue()
 
         parte_recep, parte_admin = output.split("Cerrando sesión de 'recepcion'...")
-        self.assertNotIn("Módulo de Administración", parte_recep)
+        self.assertNotIn("Módulo Administración", parte_recep)
         self.assertIn("Opción inválida", parte_recep)
-        self.assertIn("5. Módulo de Administración (Gestionar Habitaciones / Cabañas)", parte_admin)
+        self.assertIn("1. Módulo Administración", parte_admin)
+        self.assertIn("2. Módulo Gerencia", parte_admin)
+        self.assertIn("3. Módulo Recepción", parte_admin)
 
         # Acceso directo bloqueado si el rol actual no es admin
         sistema.usuario_actual = {"id_usuario": 2, "username": "recepcion", "rol": "recepcionista"}
@@ -876,7 +878,7 @@ class TestNexoPMSSmoke(unittest.TestCase):
         sistema = NexoPMS(db=self.fake_db)
         script = (
             "admin\nadmin123\n"
-            "5\n"            # Módulo de Administración
+            "1\n"            # Módulo Administración
             "2\n"            # Agregar alojamiento
             "2\n"            # Cabaña
             "Cabaña 1\n"     # Identificador
@@ -884,10 +886,12 @@ class TestNexoPMSSmoke(unittest.TestCase):
             "2\n"            # Intentar duplicado insensible a mayúsculas
             "2\n"
             "cabaña 1\n"
-            "5\n"            # Volver al menú principal
+            "7\n"            # Volver al menú principal
+            "3\n"            # Módulo Recepción
             "2\n"            # Consultar tarifas
             "1\n"            # Consultar matriz de disponibilidad
-            "7\n"            # Salir
+            "8\n"            # Volver al menú principal
+            "5\n"            # Salir
         )
         buffer = io.StringIO()
         with patch("sys.stdout", buffer), patch("sys.stdin", io.StringIO(script)):
@@ -928,17 +932,19 @@ class TestNexoPMSSmoke(unittest.TestCase):
         # 2. Editar 103 (ítem 3) -> Cabaña / Cabaña 3 / $90,000 y luego crear nueva reserva en Cabaña 3
         script_admin = (
             "admin\nadmin123\n"
-            "5\n"           # Admin
+            "1\n"           # Módulo Administración
             "3\n"           # Editar
             "3\n"           # Lista #3 (103)
             "2\n"           # Cabaña
             "Cabaña 3\n"    # Nuevo identificador
             "90000\n"       # Nueva tarifa
-            "5\n"           # Volver
+            "7\n"           # Volver al menú principal
+            "3\n"           # Módulo Recepción
             "3\n"           # Nueva reserva con tarifa actualizada
             "Cabaña 3\n10\n2\n22.222.222-2\nLuis\n8888\nn\nn\ns\n"
-            "4\n"           # Ver reservas activas
-            "7\n"           # Salir
+            "6\n"           # Ver reservas activas
+            "8\n"           # Volver al menú principal
+            "5\n"           # Salir
         )
         buffer = io.StringIO()
         with patch("sys.stdout", buffer), patch("sys.stdin", io.StringIO(script_admin)):
@@ -1788,9 +1794,11 @@ class TestNexoPMSSmoke(unittest.TestCase):
             "5\n"                   # Ver todos los informes completos
             "6\n"                   # Cerrar sesión / Cambiar de usuario desde reportes
             "admin\nadmin123\n"
-            "8\n"                   # Módulo de Reservas (Admin)
+            "2\n"                   # Módulo Gerencia (Admin)
+            "5\n"                   # Volver
+            "3\n"                   # Módulo Recepción (Admin)
             "8\n"                   # Volver
-            "7\n"                   # Salir
+            "5\n"                   # Salir
         )
         buf = io.StringIO()
         with patch("sys.stdout", buf), patch("sys.stdin", io.StringIO(script)):
@@ -1802,7 +1810,8 @@ class TestNexoPMSSmoke(unittest.TestCase):
         self.assertIn("Bienvenido/a, admin (Rol: admin)", out)
         self.assertIn("GESTIÓN DE RESERVAS EXISTENTES (GERENCIA)", out)
         self.assertIn("MÓDULO DE INFORMES Y REPORTES", out)
-        self.assertIn("MÓDULO DE RESERVAS (ADMIN)", out)
+        self.assertIn("MÓDULO GERENCIA", out)
+        self.assertIn("MÓDULO RECEPCIÓN", out)
 
         # 2. Gerente NO puede registrar nuevas reservas ni acceder a administración
         sistema.usuario_actual = {"id_usuario": 2, "username": "gerente", "rol": "gerente"}
@@ -1837,12 +1846,12 @@ class TestNexoPMSSmoke(unittest.TestCase):
             "2\n"               # Cabaña
             "Cabaña Bosque\n"
             "80000\n"
-            "6\n"               # Gestionar Servicios Adicionales + Costos
+            "5\n"               # Gestionar Servicios Adicionales + Costos
             "2\n"               # Crear nuevo servicio adicional
             "Tour Guiado\n"
             "12000\n"
             "6\n"               # Volver a Administración
-            "5\n"               # Volver al menú principal
+            "7\n"               # Volver al menú principal
         )
         with patch("sys.stdout", io.StringIO()), patch("sys.stdin", io.StringIO(script_admin)):
             sistema.menu_administracion()
