@@ -7,10 +7,21 @@ CREATE TABLE IF NOT EXISTS configuracion (
     valor VARCHAR(150) NOT NULL
 ) ENGINE = InnoDB;
 
--- Configuración inicial del nombre del hotel
+-- Configuración inicial del nombre del local
 INSERT IGNORE INTO
     configuracion (clave, valor)
 VALUES ('nombre_hotel', 'Hotel Los Arrayanes');
+
+CREATE TABLE IF NOT EXISTS secuencias (
+    nombre VARCHAR(50) PRIMARY KEY,
+    ultimo_valor INT UNSIGNED NOT NULL
+) ENGINE = InnoDB;
+
+-- Secuencias SQL para generación automática de habitaciones (desde 104) y cabañas (desde 0)
+INSERT IGNORE INTO
+    secuencias (nombre, ultimo_valor)
+VALUES ('habitacion', 104),
+    ('cabana', 0);
 
 CREATE TABLE IF NOT EXISTS usuarios (
     id_usuario INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

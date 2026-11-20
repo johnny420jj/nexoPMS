@@ -18,6 +18,30 @@
       --danger: #ef4444;
       --warning: #f59e0b;
     }
+    body.role-admin {
+      --bg: #1a0b0e;
+      --surface: #2a1216;
+      --surface-2: #3b1920;
+      --border: #5c2631;
+      --accent: #f87171;
+      --accent-dark: #dc2626;
+    }
+    body.role-gerente {
+      --bg: #081a14;
+      --surface: #0f2920;
+      --surface-2: #163a2e;
+      --border: #215745;
+      --accent: #34d399;
+      --accent-dark: #059669;
+    }
+    body.role-recepcionista {
+      --bg: #0b1526;
+      --surface: #13223b;
+      --surface-2: #1b3154;
+      --border: #2a4775;
+      --accent: #38bdf8;
+      --accent-dark: #0284c7;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
@@ -30,6 +54,7 @@
     a:hover { text-decoration: underline; }
     .navbar {
       background: var(--surface);
+      border-top: 4px solid var(--accent);
       border-bottom: 1px solid var(--border);
       padding: 0.85rem 1.5rem;
       display: flex;
@@ -137,7 +162,7 @@
     details summary { cursor: pointer; color: var(--accent); font-weight: 600; }
   </style>
 </head>
-<body>
+<body class="role-{{ usuario.rol|default:'guest' }}">
   {% if usuario %}
   <nav class="navbar">
     <div class="brand">Nexo<span>PMS</span> · {{ nombre_hotel|default:"Hotel Los Arrayanes" }}</div>

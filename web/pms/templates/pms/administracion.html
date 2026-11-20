@@ -3,11 +3,11 @@
 
 {% block content %}
 <div class="card">
-  <h2>Configuración del Hotel</h2>
+  <h2>Configuración de Local</h2>
   <form method="post" action="{% url 'editar_hotel' %}" style="display:flex; flex-wrap:wrap; gap:0.75rem; align-items:flex-end;">
     {% csrf_token %}
     <div style="flex:1; min-width:260px;">
-      <label for="nombre_hotel">Nombre del Hotel / Complejo</label>
+      <label for="nombre_hotel">Nombre del Local</label>
       <input id="nombre_hotel" type="text" name="nombre_hotel" value="{{ nombre_hotel }}" maxlength="150" required />
     </div>
     <button type="submit" class="btn">Guardar Nombre</button>
@@ -17,24 +17,39 @@
 <div class="grid grid-2">
   <div class="card">
     <h2>Agregar Habitación o Cabaña</h2>
-    <form method="post" action="{% url 'agregar_alojamiento' %}">
+    <form method="post" action="{% url 'agregar_alojamiento' %}" id="form-tipo-local">
       {% csrf_token %}
       <div class="form-row">
-        <label>Tipo de alojamiento</label>
-        <select name="tipo" required>
-          <option value="Habitación">Habitación</option>
+        <label for="tipo_local">Tipo de local</label>
+        <select id="tipo_local" name="tipo_local" required>
+          <option value="Hotel" selected>Hotel</option>
           <option value="Cabaña">Cabaña</option>
         </select>
       </div>
-      <div class="form-row">
-        <label>Identificador / Código</label>
-        <input type="text" name="numero_habitacion" maxlength="50" required placeholder="ej. 105 o Cabaña 1" />
+
+      <!-- Opciones exclusivas para Hotel -->
+      <div id="bloque-hotel">
+        <div class="form-row">
+          <label for="cantidad_habitaciones">Número total de habitaciones a agregar</label>
+          <input id="cantidad_habitaciones" type="number" name="cantidad_habitaciones" min="1" max="100" value="1" required />
+          <small class="muted">Los IDs / números de habitación se generarán automáticamente mediante secuencia SQL (ej. 105, 106...).</small>
+        </div>
       </div>
-      <div class="form-row">
-        <label>Tarifa base por noche ($)</label>
-        <input type="number" name="tarifa_base_noche" min="1" required placeholder="65000" />
+
+      <!-- Opciones exclusivas para Cabaña (sin números de habitación) -->
+      <div id="bloque-cabana" style="display:none;">
+        <div class="form-row">
+          <label for="cantidad_cabanas">Cantidad de cabañas a agregar</label>
+          <input id="cantidad_cabanas" type="number" name="cantidad_cabanas" min="1" max="100" value="1" disabled />
+          <small class="muted">Las cabañas se crearán automáticamente sin número de habitación (ej. Cabaña 1, Cabaña 2...).</small>
+        </div>
       </div>
-      <button type="submit" class="btn">Agregar Alojamiento</button>
+
+      <div class="form-row">
+        <label for="tarifa_base_noche">Tarifa base por noche ($)</label>
+        <input id="tarifa_base_noche" type="number" name="tarifa_base_noche" min="1" required placeholder="65000" />
+      </div>
+      <button type="submit" class="btn" id="btn-agregar-local">Generar Habitaciones</button>
     </form>
   </div>
 
@@ -166,4 +181,30 @@
     </table>
   </div>
 </div>
+
+<script>
+(function () {
+  const tipoSel = document.getElementById("tipo_local");
+  const bloqueHotel = document.getElementById("bloque-hotel");
+  const bloqueCabana = document.getElementById("bloque-cabana");
+  const inputHab = document.getElementById("cantidad_habitaciones");
+  const inputCab = document.getElementById("cantidad_cabanas");
+  const btn = document.getElementById("btn-agregar-local");
+  if (!tipoSel || !bloqueHotel || !bloqueCabana) return;
+
+  function actualizarOpciones() {
+    const esHotel = tipoSel.value === "Hotel";
+    bloqueHotel.style.display = esHotel ? "block" : "none";
+    bloqueCabana.style.display = esHotel ? "none" : "block";
+    inputHab.disabled = !esHotel;
+    inputHab.required = esHotel;
+    inputCab.disabled = esHotel;
+    inputCab.required = !esHotel;
+    btn.textContent = esHotel ? "Generar Habitaciones" : "Agregar Cabañas";
+  }
+
+  tipoSel.addEventListener("change", actualizarOpciones);
+  actualizarOpciones();
+})();
+</script>
 {% endblock %}

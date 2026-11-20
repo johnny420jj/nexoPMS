@@ -300,6 +300,20 @@ class ConexionDB:
                     VALUES ('nombre_hotel', 'Hotel Los Arrayanes')
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS secuencias (
+                        nombre VARCHAR(50) PRIMARY KEY,
+                        ultimo_valor INT UNSIGNED NOT NULL
+                    ) ENGINE = InnoDB
+                    """
+                )
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO secuencias (nombre, ultimo_valor)
+                    VALUES ('habitacion', 104), ('cabana', 0)
+                    """
+                )
 
                 # Migrar columnas mes/anio en reservas y ocupacion_diaria si no existen
                 for tabla_cal in ("reservas", "ocupacion_diaria"):
@@ -615,6 +629,92 @@ class ConexionDB:
             if conn and conn.is_connected():
                 conn.rollback()
             return False, None, f"Error al agregar alojamiento en MySQL: {e}"
+        finally:
+            if conn and conn.is_connected():
+                conn.close()
+
+    def agregar_alojamientos_por_secuencia(self, tipo_local, cantidad, tarifa_base_noche):
+        """
+        Genera en lote habitaciones (tipo_local='Hotel') o cabañas (tipo_local='Cabaña')
+        utilizando la tabla de secuencias SQL 'secuencias' para asignar identificadores automáticos.
+        Retorna (exito, lista_creados, mensaje).
+        """
+        if tipo_local not in ("Hotel", "Cabaña"):
+            return False, [], "Tipo de local inválido. Seleccione 'Hotel' o 'Cabaña'."
+
+        cant = _parsear_entero(cantidad, minimo=1, maximo=100)
+        if cant is None:
+            return False, [], "La cantidad debe ser un número entero entre 1 y 100."
+
+        tarifa = _parsear_entero(tarifa_base_noche, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if tarifa is None:
+            return False, [], "La tarifa base debe ser un número entero entre 1 y 4294967295."
+
+        if not self._esquema_asegurado:
+            self.asegurar_esquema()
+
+        es_hotel = (tipo_local == "Hotel")
+        seq_nombre = "habitacion" if es_hotel else "cabana"
+        tipo_unidad = "Habitación" if es_hotel else "Cabaña"
+
+        conn = None
+        try:
+            conn = self.conectar()
+            conn.start_transaction()
+            cursor = conn.cursor(dictionary=True)
+
+            creados = []
+            for _ in range(cant):
+                # Avanzar secuencia SQL evitando colisiones con identificadores existentes
+                while True:
+                    cursor.execute(
+                        """
+                        UPDATE secuencias
+                        SET ultimo_valor = LAST_INSERT_ID(ultimo_valor + 1)
+                        WHERE nombre = %s
+                        """,
+                        (seq_nombre,),
+                    )
+                    cursor.execute("SELECT LAST_INSERT_ID() AS siguiente")
+                    siguiente = int(_extraer_campo(cursor.fetchone(), "siguiente", 0))
+                    identificador = str(siguiente) if es_hotel else f"Cabaña {siguiente}"
+
+                    cursor.execute(
+                        "SELECT id_habitacion, activa FROM habitaciones WHERE LOWER(numero_habitacion) = LOWER(%s)",
+                        (identificador,),
+                    )
+                    existente = cursor.fetchone()
+                    if existente is None:
+                        cursor.execute(
+                            """
+                            INSERT INTO habitaciones (tipo, numero_habitacion, tarifa_base_noche, activa)
+                            VALUES (%s, %s, %s, 1)
+                            """,
+                            (tipo_unidad, identificador, tarifa),
+                        )
+                        creados.append(identificador)
+                        break
+                    if not bool(existente.get("activa", 1)):
+                        cursor.execute(
+                            """
+                            UPDATE habitaciones
+                            SET tipo = %s, numero_habitacion = %s, tarifa_base_noche = %s, activa = 1
+                            WHERE id_habitacion = %s
+                            """,
+                            (tipo_unidad, identificador, tarifa, existente["id_habitacion"]),
+                        )
+                        creados.append(identificador)
+                        break
+
+            conn.commit()
+            cursor.close()
+            etiqueta = "habitación(es)" if es_hotel else "cabaña(s)"
+            resumen = ", ".join(creados)
+            return True, creados, f"Se generaron {len(creados)} {etiqueta} por secuencia SQL: {resumen}."
+        except Error as e:
+            if conn and conn.is_connected():
+                conn.rollback()
+            return False, [], f"Error al generar alojamientos por secuencia en MySQL: {e}"
         finally:
             if conn and conn.is_connected():
                 conn.close()

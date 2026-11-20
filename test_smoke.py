@@ -40,6 +40,8 @@ class FakeConexionDB:
         self._next_hab_id = 5
         self._next_user_id = 1
         self._next_servicio_id = 1
+        self._seq_habitacion = 104
+        self._seq_cabana = 0
         self.asegurar_esquema()
 
     def asegurar_esquema(self):
@@ -181,6 +183,33 @@ class FakeConexionDB:
             "activa": 1,
         })
         return True, nuevo_id, f"{tipo} '{ident}' agregada exitosamente."
+
+    def agregar_alojamientos_por_secuencia(self, tipo_local, cantidad, tarifa_base_noche):
+        if tipo_local not in ("Hotel", "Cabaña"):
+            return False, [], "Tipo de local inválido."
+        cant = _parsear_entero(cantidad, minimo=1, maximo=100)
+        if cant is None:
+            return False, [], "Cantidad inválida."
+        tarifa = _parsear_entero(tarifa_base_noche, minimo=1, maximo=MAX_INT_UNSIGNED)
+        if tarifa is None:
+            return False, [], "Tarifa inválida."
+        es_hotel = (tipo_local == "Hotel")
+        tipo_unidad = "Habitación" if es_hotel else "Cabaña"
+        creados = []
+        for _ in range(cant):
+            while True:
+                if es_hotel:
+                    self._seq_habitacion += 1
+                    ident = str(self._seq_habitacion)
+                else:
+                    self._seq_cabana += 1
+                    ident = f"Cabaña {self._seq_cabana}"
+                ok, _, _ = self.agregar_habitacion(tipo_unidad, ident, tarifa)
+                if ok:
+                    creados.append(ident)
+                    break
+        etiqueta = "habitación(es)" if es_hotel else "cabaña(s)"
+        return True, creados, f"Se generaron {len(creados)} {etiqueta} por secuencia SQL: {', '.join(creados)}."
 
     def editar_habitacion(self, id_habitacion, tipo, numero_habitacion, tarifa_base_noche):
         id_hab = _parsear_entero(id_habitacion, minimo=1, maximo=MAX_INT_UNSIGNED)

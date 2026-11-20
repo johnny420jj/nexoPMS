@@ -475,14 +475,30 @@ def editar_hotel_view(request):
 def agregar_alojamiento_view(request):
     if request.method == "POST":
         sistema = _obtener_sistema(request)
-        tipo = request.POST.get("tipo", "Habitación").strip()
-        numero = request.POST.get("numero_habitacion", "").strip()
+        tipo_local = request.POST.get("tipo_local", "").strip()
         tarifa = request.POST.get("tarifa_base_noche", "").strip()
-        exito, _, msg = sistema.db.agregar_habitacion(tipo, numero, tarifa)
-        if exito:
-            messages.success(request, msg)
+
+        if tipo_local in ("Hotel", "Cabaña"):
+            if tipo_local == "Hotel":
+                cantidad = request.POST.get("cantidad_habitaciones", "1").strip()
+            else:
+                cantidad = request.POST.get("cantidad_cabanas", "1").strip()
+            exito, _, msg = sistema.db.agregar_alojamientos_por_secuencia(
+                tipo_local, cantidad, tarifa
+            )
+            if exito:
+                messages.success(request, msg)
+            else:
+                messages.error(request, msg)
         else:
-            messages.error(request, msg)
+            # Compatibilidad con envío individual clásico (tipo + numero_habitacion)
+            tipo = request.POST.get("tipo", "Habitación").strip()
+            numero = request.POST.get("numero_habitacion", "").strip()
+            exito, _, msg = sistema.db.agregar_habitacion(tipo, numero, tarifa)
+            if exito:
+                messages.success(request, msg)
+            else:
+                messages.error(request, msg)
     return redirect("administracion")
 
 
